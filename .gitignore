@@ -1,0 +1,37 @@
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Logs
+*.log
+
+# Local credentials
+.env
+.env.*
+!.env.example
+backend/config/local.yml
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Electron build output
+frontend/release/
+frontend/out/
+
+# Backend build output
+backend/target/
+
+# Runtime uploads. Keep folders through .gitkeep, but do not commit media files.
+backend/uploads/audio/*
+backend/uploads/covers/*
+backend/uploads/lyrics/*
+!backend/uploads/audio/.gitkeep
+!backend/uploads/covers/.gitkeep
+!backend/uploads/lyrics/.gitkeep
+

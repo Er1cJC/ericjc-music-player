@@ -1,14 +1,19 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { parseBlob } from 'music-metadata';
 import {
   Heart,
+  ArrowLeft,
+  Check,
   Home,
   Library,
+  ListMusic,
   LogIn,
   LogOut,
   Pause,
+  Pencil,
   Play,
+  MoreHorizontal,
   Plus,
   Save,
   Search,
@@ -50,7 +55,11 @@ type SongResponse = {
   liked: boolean;
 };
 
-type ViewKey = 'discover' | 'search' | 'library' | 'admin';
+type ViewKey = 'discover' | 'search' | 'library' | 'playlist' | 'admin';
+
+type PlaylistSummary = { id: number; name: string; description: string | null; songCount: number; createdAt: string };
+type PlaylistDetail = { id: number; name: string; description: string | null; songs: Song[] };
+type PlaylistDetailResponse = Omit<PlaylistDetail, 'songs'> & { songs: SongResponse[] };
 
 type AuthUser = { userId: number; username: string; role: string };
 
@@ -84,6 +93,28 @@ const authMode = ref<'login' | 'register'>('login');
 const authUsername = ref('');
 const authPassword = ref('');
 const authError = ref('');
+
+const playlists = ref<PlaylistSummary[]>([]);
+const activePlaylist = ref<PlaylistDetail | null>(null);
+const showPlaylistModal = ref(false);
+const playlistModalMode = ref<'create' | 'rename'>('create');
+const playlistFormName = ref('');
+const playlistFormDesc = ref('');
+const playlistFormError = ref('');
+const playlistMsg = ref('');
+const playlistMsgError = ref(false);
+const playlistEditingId = ref<number | null>(null);
+const playlistSaving = ref(false);
+const playlistLoading = ref(false);
+const playlistBusy = ref(false);
+const addToPlaylistSong = ref<Song | null>(null);
+const playlistContainsIds = ref<Set<number>>(new Set());
+const playlistMenuLoading = ref(false);
+const playlistMenuError = ref('');
+const playlistMenuStyle = ref({ top: '0px', left: '0px' });
+let playlistDetailRequest = 0;
+let playlistMenuRequest = 0;
+let playlistMessageTimer: ReturnType<typeof setTimeout> | undefined;
 
 const isAdmin = computed(() => authUser.value?.role === 'ADMIN');
 
@@ -141,11 +172,13 @@ const durationTime = computed(() => formatTime(Math.round(activeDuration.value))
 const activeDuration = computed(() => audioDuration.value || currentSong.value?.duration || 0);
 
 const viewTitle = computed(() => {
+  if (activeView.value === 'playlist') return { eyebrow: '我的音乐', title: activePlaylist.value?.name || '歌单' };
   if (activeView.value === 'admin') return { eyebrow: '管理后台', title: activeAdminTab.value === 'songs' ? '歌曲管理' : activeAdminTab.value === 'users' ? '用户管理' : '上传歌曲' };
   return { eyebrow: activeView.value === 'discover' ? '推荐' : activeView.value === 'search' ? '搜索' : '个人音乐', title: activeView.value === 'discover' ? '今天想听什么？' : activeView.value === 'search' ? '搜索音乐' : '我的音乐' };
 });
 
-onMounted(() => { loadSongs(); });
+onMounted(() => { loadSongs(); document.addEventListener('keydown', handlePlaylistEscape); });
+onUnmounted(() => { document.removeEventListener('keydown', handlePlaylistEscape); clearTimeout(playlistMessageTimer); });
 watch(currentSong, (s) => { if (s) loadLyrics(s); });
 
 watch(volume, v => { if (audioElement.value) audioElement.value.volume = v / 100; });
@@ -177,7 +210,7 @@ async function loadSongs() {
     songs.value = fallbackSongs;
     errorMessage.value = '后端暂时不可用，已显示本地示例数据。';
   } finally { currentSong.value = songs.value[0] ?? null; isLoading.value = false; }
-  if (authToken.value) { loadFavorites(); loadHistory(); }
+  if (authToken.value) { loadFavorites(); loadHistory(); loadPlaylists(); }
 }
 
 async function loadFavorites() {
@@ -200,7 +233,173 @@ async function handleAuth() {
   } catch { authError.value = '网络错误'; }
 }
 
-function logout() { authToken.value = null; authUser.value = null; localStorage.removeItem('musicPlayerToken'); likedSongIds.value = new Set(); recentSongIds.value = []; activeView.value = 'discover'; }
+function logout() {
+  authToken.value = null; authUser.value = null; localStorage.removeItem('musicPlayerToken'); likedSongIds.value = new Set(); recentSongIds.value = []; activeView.value = 'discover';
+  playlists.value = []; activePlaylist.value = null; showPlaylistModal.value = false; playlistMsg.value = ''; playlistLoading.value = false;
+  playlistDetailRequest++; closePlaylistMenu();
+}
+
+function notifyPlaylist(message: string, error = false) {
+  playlistMsg.value = message; playlistMsgError.value = error;
+  clearTimeout(playlistMessageTimer);
+  playlistMessageTimer = setTimeout(() => { playlistMsg.value = ''; }, 5000);
+}
+
+async function playlistResponse<T>(response: Response): Promise<T> {
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || (response.status === 401 ? '请先登录' : '操作失败，请稍后重试。'));
+  return data as T;
+}
+
+async function loadPlaylists(): Promise<boolean> {
+  const token = authToken.value;
+  if (!token) return false;
+  try {
+    const r = await fetch('/api/playlists', { headers: apiHeaders() });
+    const data = await playlistResponse<{ playlists: PlaylistSummary[] }>(r);
+    if (authToken.value !== token) return false;
+    playlists.value = data.playlists;
+    return true;
+  } catch {
+    if (authToken.value === token) notifyPlaylist('歌单暂时无法加载，请稍后重试。', true);
+    return false;
+  }
+}
+
+async function openPlaylist(p: PlaylistSummary) {
+  const request = ++playlistDetailRequest;
+  const token = authToken.value;
+  closePlaylistMenu();
+  activePlaylist.value = { id: p.id, name: p.name, description: p.description, songs: [] };
+  playlistLoading.value = true;
+  switchView('playlist');
+  try {
+    const r = await fetch(`/api/playlists/${p.id}`, { headers: apiHeaders() });
+    const data = await playlistResponse<PlaylistDetailResponse>(r);
+    if (request !== playlistDetailRequest || token !== authToken.value) return;
+    activePlaylist.value = { ...data, songs: data.songs.map(toDisplaySong) };
+  } catch (e) {
+    if (request === playlistDetailRequest && token === authToken.value) {
+      activePlaylist.value = null;
+      switchView('library');
+      notifyPlaylist(e instanceof Error ? e.message : '歌单暂时无法加载，请稍后重试。', true);
+    }
+  } finally { if (request === playlistDetailRequest) playlistLoading.value = false; }
+}
+
+function openPlaylistModal(p?: PlaylistSummary | PlaylistDetail) {
+  closePlaylistMenu();
+  if (!authToken.value) { showAuthModal.value = true; return; }
+  playlistModalMode.value = p ? 'rename' : 'create';
+  playlistEditingId.value = p?.id ?? null;
+  playlistFormName.value = p?.name || ''; playlistFormDesc.value = p?.description || ''; playlistFormError.value = '';
+  showPlaylistModal.value = true;
+  nextTick(() => document.querySelector<HTMLInputElement>('#playlist-name')?.focus());
+}
+
+function closePlaylistModal() { if (!playlistSaving.value) showPlaylistModal.value = false; }
+
+async function savePlaylist() {
+  if (playlistSaving.value) return;
+  const name = playlistFormName.value.trim();
+  if (!name) { playlistFormError.value = '歌单名称不能为空'; return; }
+  playlistSaving.value = true; playlistFormError.value = '';
+  const token = authToken.value;
+  try {
+    const rename = playlistModalMode.value === 'rename';
+    const r = await fetch(rename ? `/api/playlists/${playlistEditingId.value}` : '/api/playlists', {
+      method: rename ? 'PUT' : 'POST', headers: apiHeaders(),
+      body: JSON.stringify({ name, description: playlistFormDesc.value.trim() })
+    });
+    const data = await playlistResponse<PlaylistSummary>(r);
+    if (token !== authToken.value) return;
+    if (activePlaylist.value?.id === data.id) {
+      activePlaylist.value.name = data.name; activePlaylist.value.description = data.description;
+    }
+    showPlaylistModal.value = false;
+    await loadPlaylists();
+    notifyPlaylist(rename ? '歌单已更新' : '歌单创建成功');
+  } catch (e) {
+    if (token === authToken.value) playlistFormError.value = e instanceof Error ? e.message : '保存失败，请稍后重试。';
+  } finally { playlistSaving.value = false; }
+}
+
+async function deletePlaylist(p: PlaylistSummary | PlaylistDetail) {
+  if (playlistBusy.value || !window.confirm(`确定删除歌单「${p.name}」吗？`)) return;
+  playlistBusy.value = true;
+  const token = authToken.value;
+  try {
+    const r = await fetch(`/api/playlists/${p.id}`, { method: 'DELETE', headers: apiHeaders() });
+    await playlistResponse(r);
+    if (token !== authToken.value) return;
+    if (activePlaylist.value?.id === p.id) { playlistDetailRequest++; activePlaylist.value = null; switchView('library'); }
+    await loadPlaylists();
+    notifyPlaylist('歌单已删除');
+  } catch (e) { if (token === authToken.value) notifyPlaylist(e instanceof Error ? e.message : '删除失败，请稍后重试。', true); }
+  finally { playlistBusy.value = false; }
+}
+
+async function removePlaylistSong(song: Song) {
+  const p = activePlaylist.value;
+  if (!p || playlistBusy.value) return;
+  playlistBusy.value = true;
+  const token = authToken.value;
+  try {
+    const r = await fetch(`/api/playlists/${p.id}/songs/${song.id}`, { method: 'DELETE', headers: apiHeaders() });
+    await playlistResponse(r);
+    if (token !== authToken.value) return;
+    if (activePlaylist.value?.id === p.id) activePlaylist.value.songs = activePlaylist.value.songs.filter(s => s.id !== song.id);
+    await loadPlaylists();
+    notifyPlaylist('歌曲已从歌单移除');
+  } catch (e) { if (token === authToken.value) notifyPlaylist(e instanceof Error ? e.message : '移除失败，请稍后重试。', true); }
+  finally { playlistBusy.value = false; }
+}
+
+function closePlaylistMenu() { addToPlaylistSong.value = null; playlistMenuRequest++; playlistMenuLoading.value = false; }
+function handlePlaylistEscape(e: KeyboardEvent) { if (e.key === 'Escape') { closePlaylistMenu(); closePlaylistModal(); } }
+
+async function openAddToPlaylist(song: Song, event: MouseEvent) {
+  const anchor = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const width = Math.min(300, window.innerWidth - 24);
+  const height = Math.min(360, window.innerHeight - 24);
+  playlistMenuStyle.value = {
+    left: `${Math.max(12, Math.min(anchor.right - width, window.innerWidth - width - 12))}px`,
+    top: `${Math.max(12, Math.min(anchor.bottom + 6, window.innerHeight - height - 12))}px`
+  };
+  addToPlaylistSong.value = song; playlistContainsIds.value = new Set(); playlistMenuError.value = '';
+  const request = ++playlistMenuRequest;
+  if (!authToken.value) return;
+  playlistMenuLoading.value = true;
+  try {
+    if (!await loadPlaylists()) throw new Error('歌单暂时无法加载，请稍后重试。');
+    if (request !== playlistMenuRequest) return;
+    const details = await Promise.all(playlists.value.map(async p => {
+      const r = await fetch(`/api/playlists/${p.id}`, { headers: apiHeaders() });
+      return playlistResponse<PlaylistDetailResponse>(r);
+    }));
+    if (request !== playlistMenuRequest) return;
+    playlistContainsIds.value = new Set(details.filter(p => p.songs.some(s => s.id === song.id)).map(p => p.id));
+  } catch (e) {
+    if (request === playlistMenuRequest) playlistMenuError.value = e instanceof Error ? e.message : '歌单暂时无法加载，请稍后重试。';
+  } finally { if (request === playlistMenuRequest) playlistMenuLoading.value = false; }
+}
+
+async function addSongToPlaylist(p: PlaylistSummary) {
+  const song = addToPlaylistSong.value;
+  if (!song || playlistBusy.value || playlistMenuLoading.value || playlistContainsIds.value.has(p.id)) return;
+  playlistBusy.value = true;
+  const token = authToken.value;
+  try {
+    const r = await fetch(`/api/playlists/${p.id}/songs`, { method: 'POST', headers: apiHeaders(), body: JSON.stringify({ songId: song.id }) });
+    await playlistResponse(r);
+    if (token !== authToken.value) return;
+    closePlaylistMenu();
+    await loadPlaylists();
+    notifyPlaylist(`已添加到「${p.name}」`);
+  } catch (e) {
+    if (token === authToken.value) { closePlaylistMenu(); notifyPlaylist(e instanceof Error ? e.message : '添加失败，请稍后重试。', true); }
+  } finally { playlistBusy.value = false; }
+}
 
 function toDisplaySong(s: SongResponse): Song { return { ...s, cover: getCoverText(s.title), color: getSongColor(s.id) }; }
 function getCoverText(t: string) { return t.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase(); }
@@ -437,7 +636,7 @@ async function handleUpload() {
         <button class="nav-item" :class="{ active: activeView === 'search' }" type="button" @click="switchView('search')">
           <Search :size="20" />搜索
         </button>
-        <button class="nav-item" :class="{ active: activeView === 'library' }" type="button" @click="switchView('library')">
+        <button class="nav-item" :class="{ active: activeView === 'library' || activeView === 'playlist' }" type="button" @click="switchView('library')">
           <Library :size="20" />我的音乐
         </button>
       </nav>
@@ -474,6 +673,8 @@ async function handleUpload() {
         </label>
       </header>
 
+      <p v-if="playlistMsg" class="status-text playlist-notice" :class="{ warning: playlistMsgError }" role="status">{{ playlistMsg }}</p>
+
       <section v-if="currentSong && activeView === 'discover'" class="now-playing">
         <div class="cover-large" :style="{ background: currentSong.color }">
           <img :src="currentSong.coverUrl" :alt="`${currentSong.title} 封面`" @load="markCoverLoaded" @error="hideBrokenImage" />
@@ -495,27 +696,88 @@ async function handleUpload() {
         <article class="metric-card"><span>最近播放</span><strong>{{ recentSongs.length }}</strong></article>
       </section>
 
-      <section class="song-table" aria-label="歌曲列表">
+      <section v-if="activeView === 'library'" class="playlist-section" aria-label="我的歌单">
+        <div class="table-heading playlist-heading">
+          <h2>我的歌单</h2>
+          <button class="ghost-button" type="button" @click="openPlaylistModal()"><Plus :size="18" />新建歌单</button>
+        </div>
+        <div v-if="!authToken" class="playlist-login">
+          <p class="status-text">登录后即可创建歌单。</p>
+          <button class="ghost-button" type="button" @click="showAuthModal = true"><LogIn :size="18" />登录</button>
+        </div>
+        <template v-else>
+          <div v-if="playlists.length" class="playlist-grid">
+            <article v-for="p in playlists" :key="p.id" class="playlist-card saved-playlist-card">
+              <button class="playlist-open" type="button" @click="openPlaylist(p)">
+                <ListMusic :size="24" />
+                <strong>{{ p.name }}</strong>
+                <span>{{ p.songCount }} 首</span>
+                <small>{{ p.description || '暂无描述' }}</small>
+              </button>
+              <div class="playlist-card-actions">
+                <button class="icon-button" type="button" title="重命名歌单" aria-label="重命名歌单" @click.stop="openPlaylistModal(p)"><Pencil :size="18" /></button>
+                <button class="icon-button danger" type="button" title="删除歌单" aria-label="删除歌单" :disabled="playlistBusy" @click.stop="deletePlaylist(p)"><Trash2 :size="18" /></button>
+              </div>
+            </article>
+          </div>
+          <p v-else class="status-text">还没有歌单，点击右上角新建一个吧。</p>
+        </template>
+      </section>
+
+      <section v-if="activeView === 'playlist'" class="playlist-detail" aria-label="歌单详情">
+        <div class="playlist-heading">
+          <button class="ghost-button" type="button" @click="switchView('library')"><ArrowLeft :size="18" />返回我的音乐</button>
+          <div v-if="activePlaylist" class="playlist-detail-actions">
+            <button class="icon-button" type="button" title="重命名歌单" aria-label="重命名歌单" @click="openPlaylistModal(activePlaylist)"><Pencil :size="18" /></button>
+            <button class="ghost-button" type="button" :disabled="playlistBusy" @click="deletePlaylist(activePlaylist)"><Trash2 :size="18" />删除歌单</button>
+          </div>
+        </div>
+        <p v-if="playlistLoading" class="status-text">正在加载歌单...</p>
+        <template v-else-if="activePlaylist">
+          <div class="playlist-description">
+            <p>{{ activePlaylist.description || '暂无描述' }}</p>
+            <span>{{ activePlaylist.songs.length }} 首</span>
+          </div>
+          <div class="song-table playlist-song-table">
+            <div class="song-row header-row"><span>歌曲</span><span class="song-album">专辑</span><span>时长</span><span>操作</span></div>
+            <div v-for="song in activePlaylist.songs" :key="song.id" class="song-row" :class="{ selected: song.id === currentSong?.id }" role="button" tabindex="0" @click="selectSong(song)" @keydown.enter.self="selectSong(song)" @keydown.space.self.prevent="selectSong(song)">
+              <span class="song-cell">
+                <span class="cover-small" :style="{ background: song.color }"><img :src="song.coverUrl" :alt="`${song.title} 封面`" @load="markCoverLoaded" @error="hideBrokenImage" /><span>{{ song.cover }}</span></span>
+                <span><strong>{{ song.title }}</strong><small>{{ song.artist }}</small></span>
+              </span>
+              <span class="song-album">{{ song.album }}</span><span>{{ formatTime(song.duration) }}</span>
+              <span class="row-actions">
+                <button class="icon-button" type="button" title="收藏歌曲" aria-label="收藏歌曲" @click.stop="toggleLike(song)"><Heart :size="18" :fill="likedSongIds.has(song.id) ? 'currentColor' : 'none'" /></button>
+                <button class="icon-button danger" type="button" title="从歌单移除" aria-label="从歌单移除" :disabled="playlistBusy" @click.stop="removePlaylistSong(song)"><Trash2 :size="18" /></button>
+              </span>
+            </div>
+            <p v-if="!activePlaylist.songs.length" class="status-text">歌单还是空的，去歌曲列表添加歌曲吧。</p>
+          </div>
+        </template>
+      </section>
+
+      <section v-if="activeView !== 'playlist'" class="song-table main-song-table" aria-label="歌曲列表">
         <div class="table-heading">
           <h2>{{ songSectionTitle }}</h2>
           <button class="ghost-button" type="button" @click="playRandomSong(visibleSongs)"><Shuffle :size="18" />随机播放</button>
         </div>
         <p v-if="isLoading" class="status-text">正在加载歌曲...</p>
         <p v-else-if="errorMessage" class="status-text warning">后端暂时不可用，已显示本地示例数据。</p>
-        <div class="song-row header-row"><span>歌曲</span><span>专辑</span><span>时长</span><span></span></div>
-        <button v-for="song in visibleSongs" :key="song.id" class="song-row" :class="{ selected: song.id === currentSong?.id }" type="button" @click="selectSong(song)">
+        <div class="song-row header-row"><span>歌曲</span><span class="song-album">专辑</span><span>时长</span><span></span></div>
+        <div v-for="song in visibleSongs" :key="song.id" class="song-row" :class="{ selected: song.id === currentSong?.id }" role="button" tabindex="0" @click="selectSong(song)" @keydown.enter.self="selectSong(song)" @keydown.space.self.prevent="selectSong(song)">
           <span class="song-cell">
             <span class="cover-small" :style="{ background: song.color }"><img :src="song.coverUrl" :alt="`${song.title} 封面`" @load="markCoverLoaded" @error="hideBrokenImage" /><span>{{ song.cover }}</span></span>
             <span><strong>{{ song.title }}</strong><small>{{ song.artist }}</small></span>
           </span>
-          <span>{{ song.album }}</span>
+          <span class="song-album">{{ song.album }}</span>
           <span>{{ formatTime(song.duration) }}</span>
           <span class="row-actions">
             <button class="icon-button" type="button" aria-label="收藏歌曲" @click.stop="toggleLike(song)">
               <Heart :size="18" :fill="likedSongIds.has(song.id) ? 'currentColor' : 'none'" />
             </button>
+            <button class="icon-button" type="button" title="添加到歌单" aria-label="添加到歌单" :aria-expanded="addToPlaylistSong?.id === song.id" @click.stop="openAddToPlaylist(song, $event)"><MoreHorizontal :size="18" /></button>
           </span>
-        </button>
+        </div>
         <p v-if="!isLoading && visibleSongs.length === 0" class="status-text">{{ emptyMessage }}</p>
       </section>
 
@@ -713,6 +975,44 @@ async function handleUpload() {
     </Teleport>
 
     <Teleport to="body">
+      <div v-if="addToPlaylistSong" class="playlist-menu-backdrop" @click.self="closePlaylistMenu">
+        <div class="playlist-menu" :style="playlistMenuStyle" role="dialog" aria-label="添加到歌单">
+          <div class="playlist-menu-heading"><strong>添加到歌单</strong><button class="icon-button" type="button" title="关闭菜单" aria-label="关闭菜单" @click="closePlaylistMenu"><X :size="18" /></button></div>
+          <p class="playlist-menu-song">{{ addToPlaylistSong.title }}</p>
+          <template v-if="!authToken">
+            <p class="status-text">登录后可添加</p>
+            <button class="ghost-button" type="button" @click="closePlaylistMenu(); showAuthModal = true"><LogIn :size="18" />登录</button>
+          </template>
+          <template v-else>
+            <p v-if="playlistMenuLoading" class="status-text">正在加载歌单...</p>
+            <p v-else-if="playlistMenuError" class="status-text warning">{{ playlistMenuError }}</p>
+            <div v-else class="playlist-menu-list">
+              <button v-for="p in playlists" :key="p.id" class="playlist-menu-item" type="button" :disabled="playlistBusy || playlistContainsIds.has(p.id)" @click="addSongToPlaylist(p)">
+                <Check v-if="playlistContainsIds.has(p.id)" :size="18" /><span v-else class="playlist-menu-count">{{ p.songCount }} 首</span>
+                <span>{{ p.name }}</span><small v-if="playlistContainsIds.has(p.id)">已添加</small>
+              </button>
+              <p v-if="!playlists.length" class="status-text">还没有歌单。</p>
+            </div>
+            <button class="playlist-menu-item playlist-menu-create" type="button" @click="openPlaylistModal()"><Plus :size="18" />新建歌单</button>
+          </template>
+        </div>
+      </div>
+
+      <div v-if="showPlaylistModal" class="modal-backdrop" @click.self="closePlaylistModal">
+        <div class="modal-card playlist-modal" role="dialog" aria-modal="true" aria-labelledby="playlist-modal-title">
+          <div class="modal-header">
+            <h3 id="playlist-modal-title">{{ playlistModalMode === 'create' ? '新建歌单' : '重命名歌单' }}</h3>
+            <button class="icon-button" type="button" title="关闭" aria-label="关闭歌单弹窗" :disabled="playlistSaving" @click="closePlaylistModal"><X :size="20" /></button>
+          </div>
+          <form class="auth-form" @submit.prevent="savePlaylist">
+            <label><span>名称（必填）</span><input id="playlist-name" v-model="playlistFormName" required maxlength="100" placeholder="歌单名称" /></label>
+            <label><span>描述（选填）</span><textarea v-model="playlistFormDesc" maxlength="500" rows="3" placeholder="歌单描述" /></label>
+            <p v-if="playlistFormError" class="auth-error" role="alert">{{ playlistFormError }}</p>
+            <button class="primary-action" type="submit" :disabled="playlistSaving"><Save :size="18" />{{ playlistSaving ? '保存中...' : '保存' }}</button>
+          </form>
+        </div>
+      </div>
+
       <div v-if="editSong" class="modal-backdrop" @click.self="cancelEdit">
         <div class="modal-card edit-modal">
           <div class="modal-header">

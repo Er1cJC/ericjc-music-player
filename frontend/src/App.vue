@@ -5,6 +5,7 @@ import {
   Heart,
   ArrowLeft,
   Check,
+  Files,
   Home,
   Library,
   ListMusic,
@@ -65,6 +66,19 @@ type AuthUser = { userId: number; username: string; role: string };
 
 type AdminUser = { id: number; username: string; role: string; createdAt: string };
 
+type BatchSongItem = {
+  file: File;
+  title: string;
+  artist: string;
+  album: string;
+  duration: number;
+  cover: File | null;
+  coverPreview: string;
+  metadataMessage: string;
+  status: 'pending' | 'uploading' | 'done' | 'failed';
+  error: string;
+};
+
 const fallbackSongs: Song[] = [
   toDisplaySong({ id: 1, title: 'Echoes', artist: 'Pink Floyd', album: 'Meddle', duration: 1412, coverUrl: '/uploads/covers/Pink%20Floyd%20-%20Echoes.jpg', audioUrl: '/uploads/audio/Pink%20Floyd%20-%20Echoes.flac', lyricUrl: null, liked: false }),
   toDisplaySong({ id: 2, title: 'Goldener Schnitt', artist: 'Sacco', album: 'Single', duration: 52, coverUrl: '/uploads/covers/Sacco%20-%20Goldener%20Schnitt.jpg', audioUrl: '/uploads/audio/Sacco%20-%20Goldener%20Schnitt.wav', lyricUrl: null, liked: false }),
@@ -118,10 +132,13 @@ let playlistMessageTimer: ReturnType<typeof setTimeout> | undefined;
 
 const isAdmin = computed(() => authUser.value?.role === 'ADMIN');
 
-const activeAdminTab = ref<'songs' | 'users' | 'upload'>('songs');
+const activeAdminTab = ref<'songs' | 'users' | 'upload' | 'batch'>('songs');
 const adminUsers = ref<AdminUser[]>([]);
 const adminSaving = ref(false);
 const adminMsg = ref('');
+const batchItems = ref<BatchSongItem[]>([]);
+const batchProgress = ref('');
+const batchImporting = ref(false);
 
 const editSong = ref<Song | null>(null);
 const editedTitle = ref('');
@@ -173,12 +190,12 @@ const activeDuration = computed(() => audioDuration.value || currentSong.value?.
 
 const viewTitle = computed(() => {
   if (activeView.value === 'playlist') return { eyebrow: '我的音乐', title: activePlaylist.value?.name || '歌单' };
-  if (activeView.value === 'admin') return { eyebrow: '管理后台', title: activeAdminTab.value === 'songs' ? '歌曲管理' : activeAdminTab.value === 'users' ? '用户管理' : '上传歌曲' };
+  if (activeView.value === 'admin') return { eyebrow: '管理后台', title: activeAdminTab.value === 'songs' ? '歌曲管理' : activeAdminTab.value === 'users' ? '用户管理' : activeAdminTab.value === 'batch' ? '批量导入歌曲' : '上传歌曲' };
   return { eyebrow: activeView.value === 'discover' ? '推荐' : activeView.value === 'search' ? '搜索' : '个人音乐', title: activeView.value === 'discover' ? '今天想听什么？' : activeView.value === 'search' ? '搜索音乐' : '我的音乐' };
 });
 
 onMounted(() => { loadSongs(); document.addEventListener('keydown', handlePlaylistEscape); });
-onUnmounted(() => { document.removeEventListener('keydown', handlePlaylistEscape); clearTimeout(playlistMessageTimer); });
+onUnmounted(() => { document.removeEventListener('keydown', handlePlaylistEscape); clearTimeout(playlistMessageTimer); releaseBatchCoverPreviews(); });
 watch(currentSong, (s) => { if (s) loadLyrics(s); });
 
 watch(volume, v => { if (audioElement.value) audioElement.value.volume = v / 100; });
@@ -619,6 +636,227 @@ async function handleUpload() {
   } catch { adminMsg.value = '上传失败'; }
   adminSaving.value = false;
 }
+
+async function extractBatchAudioMetadata(file: File): Promise<Pick<BatchSongItem, 'title' | 'artist' | 'album' | 'duration' | 'cover' | 'coverPreview' | 'metadataMessage'>> {
+  let title = '';
+  let artist = '';
+  let album = '';
+  let duration = 0;
+  let cover: File | null = null;
+  let coverPreview = '';
+  let matched = 0;
+
+  try {
+    const metadata = await parseBlob(file);
+    const { common, format } = metadata;
+    if (common.title) { title = common.title; matched++; }
+    if (common.artist) { artist = common.artist; matched++; }
+    if (common.album) { album = common.album; matched++; }
+    if (format.duration && format.duration > 0) { duration = Math.round(format.duration); matched++; }
+    if (common.picture && common.picture.length > 0) {
+      const picture = common.picture[0];
+      const blob = new Blob([picture.data as unknown as BlobPart], { type: picture.type || 'image/jpeg' });
+      cover = new File([blob], `cover.${picture.type?.split('/')[1] || 'jpg'}`, { type: picture.type || 'image/jpeg' });
+      coverPreview = URL.createObjectURL(blob);
+      matched++;
+    }
+  } catch (error) {
+    console.warn('批量导入元数据解析失败:', error);
+  }
+
+  return {
+    title,
+    artist,
+    album,
+    duration,
+    cover,
+    coverPreview,
+    metadataMessage: matched > 0 ? `已从文件中读取 ${matched} 项信息` : '文件中未包含元数据，请手动填写'
+  };
+}
+
+function releaseBatchCoverPreview(item: BatchSongItem) {
+  if (item.coverPreview) {
+    URL.revokeObjectURL(item.coverPreview);
+    item.coverPreview = '';
+  }
+}
+
+function releaseBatchCoverPreviews() { batchItems.value.forEach(releaseBatchCoverPreview); }
+
+function batchItemHasMissing(item: BatchSongItem) {
+  return !item.title.trim() || !item.artist.trim() || !item.album.trim();
+}
+
+async function handleBatchAudioSelect(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const selectedFiles = Array.from(input.files || []);
+  input.value = '';
+  if (!selectedFiles.length) return;
+  if (selectedFiles.length > 50) {
+    adminMsg.value = '一次最多选择 50 个音频文件';
+  }
+
+  const existingKeys = new Set(batchItems.value.map(item => `${item.file.name}:${item.file.size}`));
+  const newFiles: File[] = [];
+  let duplicateCount = 0;
+  for (const file of selectedFiles.slice(0, 50)) {
+    const key = `${file.name}:${file.size}`;
+    if (existingKeys.has(key)) { duplicateCount++; continue; }
+    existingKeys.add(key);
+    newFiles.push(file);
+  }
+  if (duplicateCount > 0) {
+    adminMsg.value = `${adminMsg.value ? `${adminMsg.value}；` : ''}已跳过 ${duplicateCount} 个重复文件`;
+  }
+
+  for (const file of newFiles) {
+    const item: BatchSongItem = {
+      file,
+      title: '',
+      artist: '',
+      album: '',
+      duration: 0,
+      cover: null,
+      coverPreview: '',
+      metadataMessage: '正在读取文件信息...',
+      status: 'pending',
+      error: ''
+    };
+    batchItems.value.push(item);
+    const metadata = await extractBatchAudioMetadata(file);
+    const current = batchItems.value.find(candidate => candidate.file === file);
+    if (current) Object.assign(current, metadata);
+  }
+}
+
+function removeBatchItem(index: number) {
+  if (batchImporting.value) return;
+  const item = batchItems.value[index];
+  if (item) releaseBatchCoverPreview(item);
+  batchItems.value.splice(index, 1);
+}
+
+function clearBatchItems() {
+  if (batchImporting.value) return;
+  releaseBatchCoverPreviews();
+  batchItems.value = [];
+  batchProgress.value = '';
+}
+
+async function uploadBatchFiles(files: File[], type: 'audio' | 'cover'): Promise<{ url: string | null; error: string | null }[]> {
+  const formData = new FormData();
+  files.forEach(file => formData.append('files', file));
+  formData.append('type', type);
+  const response = await fetch('/api/admin/upload/batch', { method: 'POST', headers: authHeaders(), body: formData });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || '批量上传失败');
+  return data.results || [];
+}
+
+async function createBatchSongs(songs: Record<string, unknown>[]) {
+  const response = await fetch('/api/admin/songs/batch', {
+    method: 'POST',
+    headers: apiHeaders(),
+    body: JSON.stringify({ songs })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || '批量创建歌曲失败');
+  return data as { created: number; results: { index: number; success: boolean; id?: number; error?: string }[] };
+}
+
+async function importBatchSongs() {
+  if (batchImporting.value || !batchItems.value.length) {
+    if (!batchItems.value.length) adminMsg.value = '没有可导入的歌曲';
+    return;
+  }
+
+  adminMsg.value = '';
+  batchProgress.value = '';
+  const rows = batchItems.value.filter(item => item.status !== 'done');
+  const validRows: BatchSongItem[] = [];
+  rows.forEach(item => {
+    item.error = '';
+    if (batchItemHasMissing(item)) {
+      item.status = 'failed';
+      item.error = '缺少必填信息';
+    } else {
+      item.status = 'uploading';
+      validRows.push(item);
+    }
+  });
+  if (!validRows.length) {
+    adminMsg.value = '没有可导入的歌曲';
+    return;
+  }
+
+  batchImporting.value = true;
+  const audioUrls = new Map<BatchSongItem, string>();
+  const coverUrls = new Map<BatchSongItem, string>();
+  try {
+    for (let start = 0; start < validRows.length; start += 10) {
+      const chunk = validRows.slice(start, start + 10);
+      batchProgress.value = `正在上传音频文件 ${Math.min(start + chunk.length, validRows.length)}/${validRows.length}…`;
+      try {
+        const results = await uploadBatchFiles(chunk.map(item => item.file), 'audio');
+        chunk.forEach((item, index) => {
+          const result = results[index];
+          if (result?.url && !result.error) audioUrls.set(item, result.url);
+          else { item.status = 'failed'; item.error = result?.error || '音频上传失败'; }
+        });
+      } catch (error) {
+        chunk.forEach(item => { item.status = 'failed'; item.error = error instanceof Error ? error.message : '音频上传失败'; });
+      }
+    }
+
+    const coverRows = validRows.filter(item => item.status === 'uploading' && item.cover);
+    for (let start = 0; start < coverRows.length; start += 10) {
+      const chunk = coverRows.slice(start, start + 10);
+      batchProgress.value = `正在上传封面文件 ${Math.min(start + chunk.length, coverRows.length)}/${coverRows.length}…`;
+      try {
+        const results = await uploadBatchFiles(chunk.map(item => item.cover as File), 'cover');
+        chunk.forEach((item, index) => {
+          const result = results[index];
+          if (result?.url && !result.error) coverUrls.set(item, result.url);
+          else { item.status = 'failed'; item.error = result?.error || '封面上传失败'; }
+        });
+      } catch (error) {
+        chunk.forEach(item => { item.status = 'failed'; item.error = error instanceof Error ? error.message : '封面上传失败'; });
+      }
+    }
+
+    const rowsToCreate = validRows.filter(item => item.status === 'uploading' && audioUrls.has(item) && (!item.cover || coverUrls.has(item)));
+    if (rowsToCreate.length) {
+      batchProgress.value = `正在创建 ${rowsToCreate.length} 条歌曲记录…`;
+      try {
+        const data = await createBatchSongs(rowsToCreate.map(item => ({
+          title: item.title.trim(),
+          artist: item.artist.trim(),
+          album: item.album.trim(),
+          duration: item.duration,
+          audioUrl: audioUrls.get(item),
+          coverUrl: item.cover ? coverUrls.get(item) : null,
+          lyricUrl: null
+        })));
+        rowsToCreate.forEach((item, index) => {
+          const result = data.results?.[index];
+          if (result?.success) { item.status = 'done'; item.error = ''; }
+          else { item.status = 'failed'; item.error = result?.error || '歌曲创建失败'; }
+        });
+      } catch (error) {
+        rowsToCreate.forEach(item => { item.status = 'failed'; item.error = error instanceof Error ? error.message : '歌曲创建失败'; });
+      }
+    }
+
+    const successCount = validRows.filter(item => item.status === 'done').length;
+    const failedCount = rows.filter(item => item.status === 'failed').length;
+    adminMsg.value = `批量导入完成：成功 ${successCount} 首，失败 ${failedCount} 首`;
+    await loadSongs();
+  } finally {
+    batchProgress.value = '';
+    batchImporting.value = false;
+  }
+}
 </script>
 
 <template>
@@ -804,6 +1042,7 @@ async function handleUpload() {
           <button :class="{ active: activeAdminTab === 'songs' }" @click="activeAdminTab = 'songs'">歌曲管理</button>
           <button :class="{ active: activeAdminTab === 'users' }" @click="activeAdminTab = 'users'">用户管理</button>
           <button :class="{ active: activeAdminTab === 'upload' }" @click="activeAdminTab = 'upload'"><Upload :size="16" />上传歌曲</button>
+          <button :class="{ active: activeAdminTab === 'batch' }" @click="activeAdminTab = 'batch'"><Files :size="16" />批量导入</button>
         </div>
       </header>
 
@@ -837,6 +1076,59 @@ async function handleUpload() {
               <span v-else class="self-tag">当前用户</span>
             </span>
           </div>
+        </div>
+      </section>
+
+      <section v-if="activeAdminTab === 'batch'" class="batch-import-panel">
+        <div class="batch-toolbar">
+          <div>
+            <h2>批量导入歌曲</h2>
+            <p class="batch-count">共 {{ batchItems.length }} 首</p>
+          </div>
+          <div class="batch-toolbar-actions">
+            <button class="ghost-button" type="button" :disabled="batchImporting || !batchItems.length" @click="clearBatchItems">清空</button>
+            <button class="primary-action" type="button" :disabled="batchImporting || !batchItems.length" @click="importBatchSongs"><Upload :size="18" />{{ batchImporting ? '导入中...' : '开始导入' }}</button>
+          </div>
+        </div>
+
+        <label class="file-drop batch-file-drop" :class="{ 'has-file': batchItems.length }">
+          <Files :size="26" />
+          <strong>选择多个音频文件</strong>
+          <span class="file-label">可重复选择，系统会自动读取歌曲信息和内嵌封面</span>
+          <input type="file" accept="audio/*" multiple hidden :disabled="batchImporting" @change="handleBatchAudioSelect" />
+        </label>
+
+        <p v-if="batchProgress" class="status-text batch-progress">{{ batchProgress }}</p>
+        <p v-if="!batchItems.length" class="status-text">选择多个音频文件，自动读取歌曲信息并批量导入。</p>
+
+        <div v-else class="batch-list">
+          <article v-for="(item, index) in batchItems" :key="`${item.file.name}-${item.file.size}-${index}`" class="batch-item" :class="`batch-item-${item.status}`">
+            <div class="batch-item-header">
+              <span class="batch-index">{{ index + 1 }}</span>
+              <strong class="batch-file-name" :title="item.file.name">{{ item.file.name }}</strong>
+              <span v-if="item.status === 'done'" class="batch-status success">已导入</span>
+              <span v-else-if="item.status === 'uploading'" class="batch-status">处理中...</span>
+              <button class="icon-button danger" type="button" title="移除文件" aria-label="移除文件" :disabled="batchImporting" @click="removeBatchItem(index)"><X :size="18" /></button>
+            </div>
+            <div class="batch-item-content">
+              <div class="batch-cover" :style="{ background: getSongColor(index + 1) }">
+                <img v-if="item.coverPreview" :src="item.coverPreview" alt="内嵌封面预览" />
+                <Files v-else :size="24" />
+              </div>
+              <div class="batch-fields">
+                <label><span>标题 *</span><input v-model="item.title" :class="{ 'batch-input-error': !item.title.trim() }" :disabled="batchImporting || item.status === 'done'" maxlength="200" placeholder="歌曲标题" /></label>
+                <label><span>歌手 *</span><input v-model="item.artist" :class="{ 'batch-input-error': !item.artist.trim() }" :disabled="batchImporting || item.status === 'done'" maxlength="200" placeholder="歌手名称" /></label>
+                <label><span>专辑 *</span><input v-model="item.album" :class="{ 'batch-input-error': !item.album.trim() }" :disabled="batchImporting || item.status === 'done'" maxlength="200" placeholder="专辑名称" /></label>
+              </div>
+              <div class="batch-item-meta">
+                <span>时长：{{ item.duration > 0 ? formatTime(item.duration) : '未识别' }}</span>
+                <span>{{ item.cover ? '已读取内嵌封面' : '未读取到封面' }}</span>
+                <small>{{ item.metadataMessage }}</small>
+                <strong v-if="item.error" class="batch-item-error">{{ item.error }}</strong>
+                <span v-else-if="item.status === 'pending' && batchItemHasMissing(item)" class="batch-item-error">缺少必填信息</span>
+              </div>
+            </div>
+          </article>
         </div>
       </section>
 

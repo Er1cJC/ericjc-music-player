@@ -148,6 +148,24 @@ const editedDuration = ref(0);
 const editedCoverUrl = ref('');
 const editedAudioUrl = ref('');
 const editedLyricUrl = ref('');
+const editedCoverFile = ref<File | null>(null);
+const editedCoverPreview = ref('');
+const editedAudioFile = ref<File | null>(null);
+const editedAudioName = ref('');
+const editedLyricFile = ref<File | null>(null);
+const editedLyricName = ref('');
+const editedAudioCurrentName = computed(() => {
+  const url = editedAudioUrl.value;
+  if (!url) return '';
+  const name = url.split('/').pop() || '';
+  try { return decodeURIComponent(name); } catch { return name; }
+});
+const editedLyricCurrentName = computed(() => {
+  const url = editedLyricUrl.value;
+  if (!url) return '';
+  const name = url.split('/').pop() || '';
+  try { return decodeURIComponent(name); } catch { return name; }
+});
 
 const uploadCoverFile = ref<File | null>(null);
 const uploadAudioFile = ref<File | null>(null);
@@ -155,7 +173,7 @@ const uploadLyricFile = ref<File | null>(null);
 const uploadTitle = ref('');
 const uploadArtist = ref('');
 const uploadAlbum = ref('');
-const uploadDuration = ref(180);
+const uploadDuration = ref(0);
 const uploadCoverPreview = ref('');
 const uploadAudioName = ref('');
 const uploadLyricName = ref('');
@@ -516,17 +534,65 @@ function startEditSong(s: Song) {
   editSong.value = s;
   editedTitle.value = s.title; editedArtist.value = s.artist; editedAlbum.value = s.album;
   editedDuration.value = s.duration; editedCoverUrl.value = s.coverUrl; editedAudioUrl.value = s.audioUrl; editedLyricUrl.value = s.lyricUrl || '';
+  editedCoverFile.value = null; editedCoverPreview.value = '';
+  editedAudioFile.value = null; editedAudioName.value = '';
+  editedLyricFile.value = null; editedLyricName.value = '';
 }
 
 function cancelEdit() { editSong.value = null; }
+
+function handleEditCoverSelect(e: Event) {
+  const input = e.target as HTMLInputElement;
+  if (input.files?.[0]) {
+    editedCoverFile.value = input.files[0];
+    editedCoverPreview.value = URL.createObjectURL(input.files[0]);
+  }
+}
+
+async function handleEditAudioSelect(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  editedAudioFile.value = file;
+  editedAudioName.value = file.name;
+  editedDuration.value = 0;
+
+  try {
+    const metadata = await parseBlob(file);
+    if (metadata.format.duration && metadata.format.duration > 0) {
+      editedDuration.value = Math.round(metadata.format.duration);
+    }
+  } catch (err) {
+    console.error('music-metadata 解析失败:', err);
+  }
+
+  if (editedDuration.value <= 0) {
+    const audio = new Audio(URL.createObjectURL(file));
+    audio.addEventListener('loadedmetadata', () => {
+      if (editedDuration.value <= 0) editedDuration.value = Math.round(audio.duration || 0);
+    });
+  }
+}
+
+function handleEditLyricSelect(e: Event) {
+  const input = e.target as HTMLInputElement;
+  if (input.files?.[0]) { editedLyricFile.value = input.files[0]; editedLyricName.value = input.files[0].name; }
+}
 
 async function saveEdit() {
   if (!editSong.value) return;
   adminSaving.value = true; adminMsg.value = '';
   try {
+    let coverUrl = editedCoverUrl.value;
+    let audioUrl = editedAudioUrl.value;
+    let lyricUrl = editedLyricUrl.value;
+    if (editedCoverFile.value) coverUrl = await uploadFileToServer(editedCoverFile.value, 'cover');
+    if (editedAudioFile.value) audioUrl = await uploadFileToServer(editedAudioFile.value, 'audio');
+    if (editedLyricFile.value) lyricUrl = await uploadFileToServer(editedLyricFile.value, 'lyric');
+    const duration = editedAudioFile.value && editedDuration.value > 0 ? editedDuration.value : editSong.value.duration;
     const r = await fetch(`/api/admin/songs/${editSong.value.id}`, {
       method: 'PUT', headers: apiHeaders(),
-      body: JSON.stringify({ title: editedTitle.value, artist: editedArtist.value, album: editedAlbum.value, duration: editedDuration.value, coverUrl: editedCoverUrl.value, audioUrl: editedAudioUrl.value, lyricUrl: editedLyricUrl.value || null })
+      body: JSON.stringify({ title: editedTitle.value, artist: editedArtist.value, album: editedAlbum.value, duration, coverUrl: coverUrl || null, audioUrl, lyricUrl: lyricUrl || null })
     });
     if (r.ok) { adminMsg.value = '保存成功'; editSong.value = null; loadSongs(); }
     else { const e = await r.json(); adminMsg.value = e.error || '保存失败'; }
@@ -628,7 +694,7 @@ async function handleUpload() {
     });
     if (r.ok) {
       adminMsg.value = '上传成功！';
-      uploadTitle.value = ''; uploadArtist.value = ''; uploadAlbum.value = ''; uploadDuration.value = 180;
+      uploadTitle.value = ''; uploadArtist.value = ''; uploadAlbum.value = ''; uploadDuration.value = 0;
       uploadCoverFile.value = null; uploadAudioFile.value = null; uploadLyricFile.value = null;
       uploadCoverPreview.value = ''; uploadAudioName.value = ''; uploadLyricName.value = ''; uploadMetadataHint.value = '';
       loadSongs();
@@ -1315,10 +1381,52 @@ async function importBatchSongs() {
             <label><span>标题</span><input v-model="editedTitle" required /></label>
             <label><span>歌手</span><input v-model="editedArtist" required /></label>
             <label><span>专辑</span><input v-model="editedAlbum" required /></label>
-            <label><span>时长（秒）</span><input v-model.number="editedDuration" type="number" required /></label>
-            <label><span>封面 URL</span><input v-model="editedCoverUrl" /></label>
-            <label><span>音频 URL</span><input v-model="editedAudioUrl" required /></label>
-            <label><span>歌词 URL</span><input v-model="editedLyricUrl" /></label>
+
+            <div class="upload-files">
+              <label class="file-drop" :class="{ 'has-file': editedCoverPreview || editedCoverUrl }">
+                <template v-if="editedCoverPreview">
+                  <img :src="editedCoverPreview" alt="新封面预览" class="cover-preview" />
+                  <span class="file-label">新封面图片（点击更换）</span>
+                </template>
+                <template v-else-if="editedCoverUrl">
+                  <img :src="editedCoverUrl" alt="当前封面" class="cover-preview" />
+                  <span class="file-label">当前封面（点击更换，可选）</span>
+                </template>
+                <template v-else>
+                  <Upload :size="24" /><span>点击上传封面图片（可选）</span>
+                </template>
+                <input type="file" accept="image/*" hidden @change="handleEditCoverSelect" />
+              </label>
+
+              <label class="file-drop" :class="{ 'has-file': editedAudioName }">
+                <template v-if="editedAudioName">
+                  <span class="file-name">{{ editedAudioName }}</span>
+                  <span class="file-label">新音频文件（点击更换）*</span>
+                </template>
+                <template v-else>
+                  <span class="file-name">{{ editedAudioCurrentName }}</span>
+                  <span class="file-label">当前音频（点击更换）*</span>
+                </template>
+                <input type="file" accept="audio/*" hidden @change="handleEditAudioSelect" />
+              </label>
+
+              <label class="file-drop" :class="{ 'has-file': editedLyricName }">
+                <template v-if="editedLyricName">
+                  <span class="file-name">{{ editedLyricName }}</span>
+                  <span class="file-label">新歌词文件（点击更换）</span>
+                </template>
+                <template v-else-if="editedLyricCurrentName">
+                  <span class="file-name">{{ editedLyricCurrentName }}</span>
+                  <span class="file-label">当前歌词（点击更换，可选）</span>
+                </template>
+                <template v-else>
+                  <Upload :size="24" /><span>点击上传歌词文件（可选）</span>
+                </template>
+                <input type="file" accept=".lrc,.txt" hidden @change="handleEditLyricSelect" />
+              </label>
+            </div>
+
+            <p class="edit-duration-hint">时长：<strong>{{ editedDuration > 0 ? formatTime(editedDuration) : '未识别' }}</strong><span>{{ editedAudioFile ? '（更换音频后自动识别）' : '（自动识别，无需填写）' }}</span></p>
             <button class="primary-action" type="submit" :disabled="adminSaving">{{ adminSaving ? '保存中...' : '保存' }}</button>
           </form>
         </div>

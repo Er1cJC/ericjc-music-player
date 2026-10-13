@@ -1075,6 +1075,23 @@ h1 {
 
 .edit-modal .auth-form { gap: 14px; }
 
+.edit-modal .file-drop { min-height: 96px; }
+
+.edit-duration-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid rgba(39, 46, 54, 0.12);
+  border-radius: 8px;
+  font-size: 14px;
+  color: #334155;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.edit-duration-hint span { font-size: 12px; color: #9ca3af; }
+
 .duration-display {
   display: flex;
   align-items: center;

@@ -31,6 +31,7 @@ import {
   X
 } from '@lucide/vue';
 import LyricStage from './components/LyricStage.vue';
+import ProfileView from './components/ProfileView.vue';
 import { findActiveIndex, parseLyrics } from './lyrics/parser';
 import type { LyricFormat, LyricLine } from './lyrics/types';
 
@@ -59,13 +60,13 @@ type SongResponse = {
   liked: boolean;
 };
 
-type ViewKey = 'discover' | 'search' | 'library' | 'playlist' | 'admin';
+type ViewKey = 'discover' | 'search' | 'library' | 'playlist' | 'admin' | 'profile';
 
 type PlaylistSummary = { id: number; name: string; description: string | null; songCount: number; createdAt: string };
 type PlaylistDetail = { id: number; name: string; description: string | null; songs: Song[] };
 type PlaylistDetailResponse = Omit<PlaylistDetail, 'songs'> & { songs: SongResponse[] };
 
-type AuthUser = { userId: number; username: string; role: string };
+type AuthUser = { userId: number; username: string; role: string; nickname: string | null; avatarUrl: string | null; bio: string | null };
 
 type AdminUser = { id: number; username: string; role: string; createdAt: string };
 
@@ -211,6 +212,7 @@ const activeDuration = computed(() => audioDuration.value || currentSong.value?.
 
 const viewTitle = computed(() => {
   if (activeView.value === 'playlist') return { eyebrow: '我的音乐', title: activePlaylist.value?.name || '歌单' };
+  if (activeView.value === 'profile') return { eyebrow: '个人中心', title: '我的主页' };
   if (activeView.value === 'admin') return { eyebrow: '管理后台', title: activeAdminTab.value === 'songs' ? '歌曲管理' : activeAdminTab.value === 'users' ? '用户管理' : activeAdminTab.value === 'batch' ? '批量导入歌曲' : '上传歌曲' };
   return { eyebrow: activeView.value === 'discover' ? '推荐' : activeView.value === 'search' ? '搜索' : '个人音乐', title: activeView.value === 'discover' ? '今天想听什么？' : activeView.value === 'search' ? '搜索音乐' : '我的音乐' };
 });
@@ -264,7 +266,7 @@ async function handleAuth() {
     const r = await fetch(authMode.value === 'login' ? '/api/auth/login' : '/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: authUsername.value, password: authPassword.value }) });
     if (!r.ok) { const e = await r.json(); authError.value = e.error || '操作失败'; return; }
     const d = await r.json();
-    authToken.value = d.token; authUser.value = { userId: d.userId, username: d.username, role: d.role };
+    authToken.value = d.token; authUser.value = { userId: d.userId, username: d.username, role: d.role, nickname: d.nickname ?? null, avatarUrl: d.avatarUrl ?? null, bio: d.bio ?? null };
     localStorage.setItem('musicPlayerToken', d.token);
     showAuthModal.value = false; authUsername.value = ''; authPassword.value = '';
     loadSongs();
@@ -454,6 +456,14 @@ async function toggleLike(song: Song) {
 function authHeaders(): Record<string, string> { const h: Record<string, string> = {}; if (authToken.value) h['Authorization'] = `Bearer ${authToken.value}`; return h; }
 
 function switchView(v: ViewKey) { activeView.value = v; if (v === 'admin') { adminMsg.value = ''; loadAdminData(); } }
+
+function openProfile() {
+  if (!authUser.value) {
+    showAuthModal.value = true; authMode.value = 'login'; authError.value = ''; authUsername.value = ''; authPassword.value = '';
+    return;
+  }
+  switchView('profile');
+}
 
 function addToRecent(song: Song) {
   recentSongIds.value = [song.id, ...recentSongIds.value.filter(id => id !== song.id)].slice(0, 12);
@@ -969,13 +979,19 @@ async function importBatchSongs() {
         <button class="nav-item" :class="{ active: activeView === 'library' || activeView === 'playlist' }" type="button" @click="switchView('library')">
           <Library :size="20" />我的音乐
         </button>
+        <button v-if="authUser" class="nav-item" :class="{ active: activeView === 'profile' }" type="button" @click="openProfile">
+          <User :size="20" />个人中心
+        </button>
       </nav>
 
       <section class="user-section">
         <template v-if="authUser">
-          <div class="user-info">
-            <span class="user-avatar"><User :size="16" /></span>
-            <span class="user-name">{{ authUser.username }}</span>
+          <div class="user-info" role="button" tabindex="0" title="打开个人中心" @click="openProfile" @keydown.enter.self="openProfile">
+            <span class="user-avatar" :class="{ 'has-avatar': !!authUser.avatarUrl }">
+              <img v-if="authUser.avatarUrl" :src="authUser.avatarUrl" alt="" />
+              <template v-else>{{ (authUser.nickname || authUser.username).charAt(0).toUpperCase() }}</template>
+            </span>
+            <span class="user-name">{{ authUser.nickname || authUser.username }}</span>
             <span v-if="isAdmin" class="admin-badge">管理员</span>
           </div>
           <button v-if="isAdmin" class="nav-item admin-entry" :class="{ active: activeView === 'admin' }" type="button" @click="switchView('admin')">
@@ -1086,7 +1102,11 @@ async function importBatchSongs() {
         </template>
       </section>
 
-      <section v-if="activeView !== 'playlist'" class="song-table main-song-table" aria-label="歌曲列表">
+      <section v-if="activeView === 'profile' && authUser" class="profile-section">
+        <ProfileView :user="authUser" :token="authToken || ''" @update-user="(u) => (authUser = u)" />
+      </section>
+
+      <section v-if="activeView !== 'playlist' && activeView !== 'profile'" class="song-table main-song-table" aria-label="歌曲列表">
         <div class="table-heading">
           <h2>{{ songSectionTitle }}</h2>
           <button class="ghost-button" type="button" @click="playRandomSong(visibleSongs)"><Shuffle :size="18" />随机播放</button>

@@ -16,7 +16,7 @@
 | Maven | IntelliJ 自带：`E:\Program\IntelliJ IDEA 2024.3.4\plugins\maven\lib\maven3\bin\mvn.cmd` | **系统没有独立 Maven，`mvn` 不在 PATH** |
 | Node / npm | v22.17.0 / 10.9.2 | |
 | Git | 2.51.0 | SSH 已配置：`~/.ssh/id_rsa` 已加入 GitHub 账号，remote 走 `ssh.github.com:443` |
-| MySQL | 服务名 `MySQL80`（开机自启） | 客户端在 `C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe`，**不在 PATH** |
+| MySQL | 服务名 `MySQL80`（开机自启） | 客户端在 `C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe`|
 
 ## 三、启动方式
 
@@ -48,9 +48,7 @@ npm run dev
 ## 五、当前数据状态（2026-10-13）
 
 - 用户：`test`（USER）、`EricJC`（ADMIN）。
-- 歌曲 19 首：内置 Echoes、Goldener Schnitt、Highscore、星降る海 4 首（**义勇军进行曲已被用户删除**，如需恢复请用户从 Mac 拷文件重新上传）+ 用户批量导入的 15 首周杰伦歌曲。
 - 媒体文件都在 `backend/uploads/`（audio/covers/lyrics，gitignore 忽略，不提交）。
-- **遗留缺口**：`backend/uploads/lyrics/Highscore.lrc` 缺失（用户删歌时被误删，数据库引用已恢复，等用户从 Mac 补拷）。
 - 数据库曾从 `music_player_backup.sql` 导入（用户的 Mac 备份）。
 
 ## 六、近期重要修复（别把坑改回去）

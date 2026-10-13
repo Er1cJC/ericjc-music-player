@@ -146,3 +146,43 @@ export interface LyricsDoc { lines: LyricLine[]; format: LyricFormat; hasWordTim
 - Folia 仓库：https://github.com/chthollyphile/folia-major
 - Folia 歌词管线说明（第三方文档站）：https://deepwiki.com/chthollyphile/folia-major/5-lyrics-pipeline
 - 增强歌词格式约定：网易云 YRC、QQ 音乐 QRC、酷狗 KRC、Apple Music TTML（公开格式说明）
+
+---
+
+## 9. 实现状态：方案三已完成
+
+本任务书已由 DSH 实现完毕，转为现状记录。后续维护请以下面为准。
+
+### 新增/改动文件
+
+| 文件 | 说明 |
+|---|---|
+| `frontend/src/lyrics/types.ts` | 统一歌词模型（行 + 字 + 翻译） |
+| `frontend/src/lyrics/parser.ts` | 自研解析器，导出 `parseLyrics()` / `findActiveIndex()` / `findActiveWordIndex()` |
+| `frontend/src/components/LyricStage.vue` | 歌词舞台（居中滚动 + 流光逐字高亮） |
+| `frontend/src/App.vue` | 接入 LyricStage；删除旧 `parseLrc` 与 `lyricContainerRef` |
+| `frontend/src/styles.css` | 流光填充、发光、上浮入场、翻译行样式、`--half-last-line` 占位变量 |
+
+### 解析器支持范围
+
+- 格式：普通 LRC、增强 LRC（逐字）、网易云 YRC、QQ 音乐 QRC、酷狗 KRC、Apple TTML（行 + 逐字）、纯文本降级
+- 容错：网易云 JSON 元数据行、`[ti:]/[ar:]/[al:]/[by:]/[offset:]` 标签、`[mm:ss]` / `[mm:ss.xx]` / `[mm:ss.xxx]` / `[mm:ss:cc]`、一行多时间戳、行尾无空格、空文本间奏行、时间戳乱序、重复时间戳（识别为翻译歌词并合并，占比门槛 60%）
+- 结束时间：优先使用格式自带的时长（YRC 行时长 / TTML 的 end），没有才用下一行起点补全
+
+### 关键设计约定（改代码时别破坏）
+
+- 行级高亮走 Vue 响应式；**逐字进度必须走 `requestAnimationFrame` + CSS 变量 `--progress`**，不要接到响应式数据上，否则每帧重渲染会卡。
+- 歌词区居中依赖 `position: relative` 容器 + `::before`(50%) / `::after`(50% − `--half-last-line`) 两个占位块；`--half-last-line` 由组件按最后一行实际高度写入。
+- 行高：普通行 44px；带翻译的行 66px（flex 竖排）。居中算法按"每行自身高度"计算，因此混合行高不会错位。
+
+### 验证方式（可复现）
+
+- 解析器单测：用 esbuild 打包 `parser.ts` 后在 node 里跑断言（真实歌词文件 + 各格式合成样本 + 边界，共 76 项）
+- 集成：通过 5173 代理取回真实歌词文件解析
+- 构建：`npm run build`（`vue-tsc --noEmit` + `vite build`）
+
+### 未做（后续可选）
+
+- 第二种视觉模式（原阶段 4，可选）
+- 罗马音（romaji）识别：模型已留字段，现有歌词文件无此数据，未实现
+

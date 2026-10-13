@@ -76,6 +76,5 @@ npm run dev
 
 ```powershell
 curl http://localhost:18080/api/health     # {"status":"ok"}
-curl http://localhost:18080/api/songs      # 19 首歌曲 JSON
 curl http://localhost:5173/                # HTTP 200
 ```

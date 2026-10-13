@@ -5,6 +5,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -41,12 +43,13 @@ public class FileUploadService {
             return;
         }
         try {
-            String relativePath = fileUrl.substring("/uploads/".length());
+            // URL 里空格是 %20、中文是 %E4...，先解码回真实文件名再删除
+            String relativePath = URLDecoder.decode(fileUrl.substring("/uploads/".length()), StandardCharsets.UTF_8);
             Path target = uploadPath.resolve(relativePath).normalize();
             if (target.startsWith(uploadPath)) {
                 Files.deleteIfExists(target);
             }
-        } catch (IOException ignored) {
+        } catch (IOException | IllegalArgumentException ignored) {
         }
     }
 }

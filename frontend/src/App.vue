@@ -30,6 +30,9 @@ import {
   Volume2,
   X
 } from '@lucide/vue';
+import LyricStage from './components/LyricStage.vue';
+import { findActiveIndex, parseLyrics } from './lyrics/parser';
+import type { LyricFormat, LyricLine } from './lyrics/types';
 
 type Song = {
   id: number;
@@ -180,9 +183,9 @@ const uploadLyricName = ref('');
 const uploadMetadataHint = ref('');
 
 const showDetail = ref(false);
-const lyricLines = ref<{ time: number; text: string }[]>([]);
+const lyricLines = ref<LyricLine[]>([]);
+const lyricsFormat = ref<LyricFormat>('plain');
 const currentLyricIndex = ref(-1);
-const lyricContainerRef = ref<HTMLElement | null>(null);
 
 if (authToken.value) {
   fetchAuthMe();
@@ -466,51 +469,25 @@ async function playCurrentSong() { await nextTick(); const a = audioElement.valu
 function updateMetadata() { const a = audioElement.value; if (a) audioDuration.value = Number.isFinite(a.duration) ? a.duration : currentSong.value?.duration || 0; }
 function updateProgress() { const a = audioElement.value; if (a) { currentSeconds.value = a.currentTime; progress.value = activeDuration.value > 0 ? Math.round((a.currentTime/activeDuration.value)*1000)/10 : 0; updateLyricIndex(a.currentTime); } }
 function updateLyricIndex(time: number) {
-  const lines = lyricLines.value;
-  if (!lines.length) return;
-  let idx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (time >= lines[i].time) idx = i; else break;
-  }
-  if (idx !== currentLyricIndex.value) {
-    currentLyricIndex.value = idx;
-    const container = lyricContainerRef.value;
-    if (!container) return;
-    // 每行高度固定，目标：当前行中心始终对准歌词区中心；
-    // 尚未唱到第一句时（idx=-1）回到顶部待命，第一句停在中心线下方。
-    const first = container.children[0] as HTMLElement | undefined;
-    const lineHeight = first ? first.offsetHeight : 44;
-    const target = idx < 0
-      ? 0
-      : Math.max(0, (container.children[idx] as HTMLElement).offsetTop - (container.clientHeight - lineHeight) / 2);
-    container.scrollTo({ top: target, behavior: 'smooth' });
-  }
+  // 行级高亮在这里更新（timeupdate 频率低）；逐字流光由 LyricStage 内部用 rAF 自行处理。
+  // 纯文本歌词没有时间轴，不参与高亮。
+  if (!lyricLines.value.length || lyricsFormat.value === 'plain') return;
+  const idx = findActiveIndex(lyricLines.value, time);
+  if (idx !== currentLyricIndex.value) currentLyricIndex.value = idx;
 }
 async function loadLyrics(song: Song) {
   lyricLines.value = [];
   currentLyricIndex.value = -1;
+  lyricsFormat.value = 'plain';
   if (!song.lyricUrl) return;
   try {
     const res = await fetch(song.lyricUrl);
     if (!res.ok) return;
     const raw = await res.text();
-    lyricLines.value = parseLrc(raw);
-    await nextTick();
-    lyricContainerRef.value?.scrollTo({ top: 0 });
+    const doc = parseLyrics(raw, { fileName: song.lyricUrl, duration: song.duration });
+    lyricLines.value = doc.lines;
+    lyricsFormat.value = doc.format;
   } catch {}
-}
-function parseLrc(raw: string): { time: number; text: string }[] {
-  const lines: { time: number; text: string }[] = [];
-  const regex = /\[(\d{2}):(\d{2})(?:[.:](\d{2,3}))?\]\s*(.*)/;
-  for (const line of raw.split('\n')) {
-    const m = line.match(regex);
-    if (!m) continue;
-    const min = parseInt(m[1]), sec = parseInt(m[2]);
-    let ms = 0;
-    if (m[3]) ms = m[3].length === 2 ? parseInt(m[3]) * 10 : parseInt(m[3]);
-    lines.push({ time: min * 60 + sec + ms / 1000, text: m[4].trim() || '' });
-  }
-  return lines;
 }
 function openDetail() { if (currentSong.value) { showDetail.value = true; loadLyrics(currentSong.value); } }
 function closeDetail() { showDetail.value = false; }
@@ -1344,14 +1321,13 @@ async function importBatchSongs() {
               </div>
             </div>
 
-            <div v-if="lyricLines.length" class="detail-lyrics" ref="lyricContainerRef">
-              <p
-                v-for="(line, i) in lyricLines"
-                :key="i"
-                class="lyric-line"
-                :class="{ active: i === currentLyricIndex }"
-              >{{ line.text || '&nbsp;' }}</p>
-            </div>
+            <LyricStage
+              v-if="lyricLines.length"
+              :lines="lyricLines"
+              :active-index="currentLyricIndex"
+              :audio-el="audioElement"
+              :playing="isPlaying"
+            />
             <div v-else class="detail-no-lyrics">
               <p>暂无歌词</p>
               <p class="sub">纯音乐，请欣赏</p>

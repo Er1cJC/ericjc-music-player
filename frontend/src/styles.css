@@ -1288,11 +1288,11 @@ h1 {
   height: 50%;
 }
 
-/* 底部占位：最后一句也能滚到中心线 */
+/* 底部占位：最后一句也能滚到中心线（半高由 LyricStage 写入 ——half-last-line） */
 .detail-lyrics::after {
   content: '';
   display: block;
-  height: calc(50% - 22px);
+  height: calc(50% - var(--half-last-line, 22px));
 }
 
 .detail-lyrics::-webkit-scrollbar {
@@ -1326,13 +1326,69 @@ h1 {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition: color 0.4s ease, text-shadow 0.4s ease;
+  opacity: 0.9;
+  transform: translateY(0) scale(1);
+  transition:
+    opacity 0.35s ease,
+    transform 0.45s cubic-bezier(0.22, 0.61, 0.36, 1),
+    filter 0.45s ease;
+}
+
+/*
+ * 流光填充：--progress（0 → 1）由 LyricStage 的 requestAnimationFrame 直接写在元素上，
+ * 不经过 Vue 响应式，因此每帧不会触发组件重渲染。
+ * 有逐字时间轴时每个字独立填充；否则整行从左到右填充。
+ */
+.lyric-text,
+.lyric-word {
+  background-image: linear-gradient(
+    90deg,
+    #fff calc(var(--progress, 0) * 100%),
+    rgba(255,255,255,0.34) calc(var(--progress, 0) * 100%)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
 }
 
 .lyric-line.active {
-  color: #fff;
+  opacity: 1;
   font-weight: 700;
-  text-shadow: 0 0 20px rgba(255,255,255,0.28);
+  transform: translateY(-3px) scale(1.02);
+  filter: drop-shadow(0 0 14px rgba(255,255,255,0.22));
+}
+
+/* 有翻译的行：原文与译文上下排列（该行高度加大，不影响其他行的对齐） */
+.lyric-line.has-translation {
+  height: 66px;
+  line-height: 1.35;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.lyric-translation {
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(255,255,255,0.45);
+  -webkit-text-fill-color: currentColor;
+  background-image: none;
+}
+
+/* 系统开启"减少动态效果"时：去掉位移、缩放与发光，只保留高亮 */
+@media (prefers-reduced-motion: reduce) {
+  .lyric-line {
+    transition: none;
+    transform: none;
+  }
+
+  .lyric-line.active {
+    transform: none;
+    filter: none;
+  }
 }
 
 .detail-no-lyrics {
@@ -1382,6 +1438,11 @@ h1 {
   .detail-lyrics .lyric-line {
     text-align: left;
     padding: 0 8px;
+  }
+
+  /* 有翻译的行是 flex 布局，左对齐要改主轴对齐方式 */
+  .detail-lyrics .lyric-line.has-translation {
+    align-items: flex-start;
   }
 
   .detail-no-lyrics {

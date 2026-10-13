@@ -1286,7 +1286,7 @@ async function importBatchSongs() {
 
     <Teleport to="body">
       <Transition name="detail-slide">
-        <div v-if="showDetail && currentSong" class="detail-overlay" @click.self="closeDetail">
+        <div v-if="showDetail && currentSong" class="detail-overlay">
           <button class="detail-close" type="button" @click="closeDetail"><ChevronDown :size="28" /></button>
 
           <div class="detail-content">

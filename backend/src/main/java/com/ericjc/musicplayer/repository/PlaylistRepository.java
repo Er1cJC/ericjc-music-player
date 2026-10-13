@@ -14,6 +14,7 @@ import java.util.Optional;
 public interface PlaylistRepository extends JpaRepository<Playlist, Long> {
     List<Playlist> findByUserOrderByCreatedAtDesc(User user);
     Optional<Playlist> findByIdAndUser(Long id, User user);
+    long countByUser(User user);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select p from Playlist p where p.id = :id and p.user = :user")

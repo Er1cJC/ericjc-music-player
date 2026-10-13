@@ -474,12 +474,16 @@ function updateLyricIndex(time: number) {
   }
   if (idx !== currentLyricIndex.value) {
     currentLyricIndex.value = idx;
-    nextTick(() => {
-      const active = lyricContainerRef.value?.querySelector('.lyric-line.active') as HTMLElement;
-      if (active) {
-        active.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    });
+    const container = lyricContainerRef.value;
+    if (!container) return;
+    // 每行高度固定，目标：当前行中心始终对准歌词区中心；
+    // 尚未唱到第一句时（idx=-1）回到顶部待命，第一句停在中心线下方。
+    const first = container.children[0] as HTMLElement | undefined;
+    const lineHeight = first ? first.offsetHeight : 44;
+    const target = idx < 0
+      ? 0
+      : Math.max(0, (container.children[idx] as HTMLElement).offsetTop - (container.clientHeight - lineHeight) / 2);
+    container.scrollTo({ top: target, behavior: 'smooth' });
   }
 }
 async function loadLyrics(song: Song) {
@@ -491,6 +495,8 @@ async function loadLyrics(song: Song) {
     if (!res.ok) return;
     const raw = await res.text();
     lyricLines.value = parseLrc(raw);
+    await nextTick();
+    lyricContainerRef.value?.scrollTo({ top: 0 });
   } catch {}
 }
 function parseLrc(raw: string): { time: number; text: string }[] {

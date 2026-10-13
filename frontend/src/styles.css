@@ -1260,17 +1260,39 @@ h1 {
 }
 
 .detail-lyrics {
+  position: relative;
   width: 100%;
   flex: 1 1 auto;
   min-height: 120px;
   overflow-y: auto;
-  padding: 16px 0;
+  padding: 0;
   mask-image: linear-gradient(transparent 0%, black 8%, black 92%, transparent 100%);
   -webkit-mask-image: linear-gradient(transparent 0%, black 8%, black 92%, transparent 100%);
+  background-image: linear-gradient(
+    to bottom,
+    transparent calc(50% - 0.5px),
+    rgba(255,255,255,0.06) calc(50% - 0.5px),
+    rgba(255,255,255,0.06) calc(50% + 0.5px),
+    transparent calc(50% + 0.5px)
+  );
   scroll-behavior: smooth;
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,0.16) transparent;
   transition: min-height 0.5s ease;
+}
+
+/* 顶部占位：滚动为 0 时第一句歌词停在中心线下方待命 */
+.detail-lyrics::before {
+  content: '';
+  display: block;
+  height: 50%;
+}
+
+/* 底部占位：最后一句也能滚到中心线 */
+.detail-lyrics::after {
+  content: '';
+  display: block;
+  height: calc(50% - 22px);
 }
 
 .detail-lyrics::-webkit-scrollbar {
@@ -1294,19 +1316,23 @@ h1 {
 
 .lyric-line {
   margin: 0;
-  padding: 10px 20px;
+  padding: 0 20px;
+  height: 44px;
+  line-height: 44px;
   font-size: 16px;
-  line-height: 1.6;
+  font-weight: 500;
   color: rgba(255,255,255,0.35);
   text-align: center;
-  transition: color 0.3s, font-size 0.3s, font-weight 0.3s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.4s ease, text-shadow 0.4s ease;
 }
 
 .lyric-line.active {
   color: #fff;
-  font-size: 20px;
   font-weight: 700;
-  text-shadow: 0 0 20px rgba(255,255,255,0.15);
+  text-shadow: 0 0 20px rgba(255,255,255,0.28);
 }
 
 .detail-no-lyrics {
@@ -1355,7 +1381,7 @@ h1 {
 
   .detail-lyrics .lyric-line {
     text-align: left;
-    padding: 10px 8px;
+    padding: 0 8px;
   }
 
   .detail-no-lyrics {

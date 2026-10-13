@@ -475,6 +475,10 @@ function updateLyricIndex(time: number) {
   const idx = findActiveIndex(lyricLines.value, time);
   if (idx !== currentLyricIndex.value) currentLyricIndex.value = idx;
 }
+/** 页面重新可见/聚焦时，由 LyricStage 触发，重新对齐当前行 */
+function resyncLyrics() {
+  if (audioElement.value) updateLyricIndex(audioElement.value.currentTime);
+}
 async function loadLyrics(song: Song) {
   lyricLines.value = [];
   currentLyricIndex.value = -1;
@@ -1327,6 +1331,7 @@ async function importBatchSongs() {
               :active-index="currentLyricIndex"
               :audio-el="audioElement"
               :playing="isPlaying"
+              @resync="resyncLyrics"
             />
             <div v-else class="detail-no-lyrics">
               <p>暂无歌词</p>

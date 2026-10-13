@@ -1359,6 +1359,22 @@ h1 {
   filter: drop-shadow(0 0 14px rgba(255,255,255,0.22));
 }
 
+/*
+ * 非当前行的明暗完全由 CSS 类决定（sung = 已唱 / 默认 = 未唱），
+ * 与残留的 --progress 无关。这样即使 rAF 在后台标签页被浏览器暂停、
+ * 导致流光缺帧，切回前台时已唱/未唱的状态依然是自洽的。
+ */
+.lyric-line:not(.active) .lyric-text,
+.lyric-line:not(.active) .lyric-word {
+  background-image: none;
+  color: inherit;
+  -webkit-text-fill-color: currentColor;
+}
+
+.lyric-line.sung {
+  color: rgba(255,255,255,0.55);
+}
+
 /* 有翻译的行：原文与译文上下排列（该行高度加大，不影响其他行的对齐） */
 .lyric-line.has-translation {
   height: 66px;

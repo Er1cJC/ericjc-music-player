@@ -19,6 +19,8 @@ const props = defineProps<{
   playing: boolean;
 }>();
 
+const emit = defineEmits<{ resync: [] }>();
+
 const containerRef = ref<HTMLElement | null>(null);
 const lineEls: HTMLElement[] = [];
 
@@ -195,6 +197,27 @@ watch(
   },
 );
 
+/** 页面重新可见/获得焦点时：补一次当前行填充，并通知父组件重算当前行下标 */
+function syncNow() {
+  const audio = props.audioEl;
+  if (audio) {
+    if (reducedMotion) {
+      applyStaticHighlight();
+    } else {
+      applyProgress(audio.currentTime);
+    }
+  }
+  emit('resync');
+}
+
+function handleVisibility() {
+  if (document.visibilityState === 'visible') syncNow();
+}
+
+function handleFocus() {
+  syncNow();
+}
+
 onMounted(() => {
   reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -212,6 +235,12 @@ onMounted(() => {
     refreshPlaceholders();
     if (reducedMotion) applyStaticHighlight();
   });
+
+  // rAF 在后台标签页会被浏览器暂停，导致流光不再推进。
+  // 切回前台/重新聚焦时主动同步一次，避免唱过的行停在半填充状态。
+  document.addEventListener('visibilitychange', handleVisibility);
+  window.addEventListener('focus', handleFocus);
+
   startLoop();
 });
 
@@ -219,6 +248,8 @@ onBeforeUnmount(() => {
   stopLoop();
   resizeObserver?.disconnect();
   resizeObserver = null;
+  document.removeEventListener('visibilitychange', handleVisibility);
+  window.removeEventListener('focus', handleFocus);
 });
 </script>
 
@@ -228,7 +259,11 @@ onBeforeUnmount(() => {
       v-for="(line, index) in lines"
       :key="index"
       class="lyric-line"
-      :class="{ active: index === activeIndex, 'has-translation': Boolean(line.translation) }"
+      :class="{
+        active: index === activeIndex,
+        sung: index < activeIndex,
+        'has-translation': Boolean(line.translation)
+      }"
       :ref="(el) => setLineRef(el, index)"
     >
       <span v-if="line.words && line.words.length" class="lyric-words">

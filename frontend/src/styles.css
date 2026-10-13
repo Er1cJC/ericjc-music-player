@@ -1189,7 +1189,7 @@ h1 {
 }
 
 .detail-vinyl.spinning .vinyl-disc {
-  animation: vinyl-spin 8s linear infinite;
+  animation: vinyl-spin 500ms linear infinite;
 }
 
 .vinyl-disc {

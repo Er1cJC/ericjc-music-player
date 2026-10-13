@@ -5,6 +5,7 @@ import com.ericjc.musicplayer.entity.PlaylistItem;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -14,6 +15,9 @@ public interface PlaylistItemRepository extends JpaRepository<PlaylistItem, Long
     long countByPlaylistId(Long playlistId);
     void deleteByPlaylistIdAndSongId(Long playlistId, Long songId);
     void deleteByPlaylist(Playlist playlist);
+
+    @Transactional
+    void deleteBySongId(Long songId);
 
     @Query("select coalesce(max(i.position), 0) from PlaylistItem i where i.playlist.id = :playlistId")
     int findMaxPosition(@Param("playlistId") Long playlistId);

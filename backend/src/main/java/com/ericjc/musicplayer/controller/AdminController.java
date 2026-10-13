@@ -2,6 +2,9 @@ package com.ericjc.musicplayer.controller;
 
 import com.ericjc.musicplayer.entity.Song;
 import com.ericjc.musicplayer.entity.User;
+import com.ericjc.musicplayer.repository.FavoriteRepository;
+import com.ericjc.musicplayer.repository.PlayHistoryRepository;
+import com.ericjc.musicplayer.repository.PlaylistItemRepository;
 import com.ericjc.musicplayer.repository.SongRepository;
 import com.ericjc.musicplayer.repository.UserRepository;
 import com.ericjc.musicplayer.service.FileUploadService;
@@ -10,6 +13,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -25,11 +29,19 @@ public class AdminController {
 
     private final SongRepository songRepository;
     private final UserRepository userRepository;
+    private final FavoriteRepository favoriteRepository;
+    private final PlayHistoryRepository playHistoryRepository;
+    private final PlaylistItemRepository playlistItemRepository;
     private final FileUploadService fileUploadService;
 
-    public AdminController(SongRepository songRepository, UserRepository userRepository, FileUploadService fileUploadService) {
+    public AdminController(SongRepository songRepository, UserRepository userRepository,
+                           FavoriteRepository favoriteRepository, PlayHistoryRepository playHistoryRepository,
+                           PlaylistItemRepository playlistItemRepository, FileUploadService fileUploadService) {
         this.songRepository = songRepository;
         this.userRepository = userRepository;
+        this.favoriteRepository = favoriteRepository;
+        this.playHistoryRepository = playHistoryRepository;
+        this.playlistItemRepository = playlistItemRepository;
         this.fileUploadService = fileUploadService;
     }
 
@@ -106,6 +118,7 @@ public class AdminController {
     }
 
     @DeleteMapping("/songs/{id}")
+    @Transactional
     public ResponseEntity<?> deleteSong(@AuthenticationPrincipal User admin, @PathVariable Long id) {
         if (!admin.isAdmin()) return forbidden();
 
@@ -114,6 +127,12 @@ public class AdminController {
             return ResponseEntity.badRequest().body(Map.of("error", "歌曲不存在"));
         }
 
+        // 清理所有关联缓存：收藏、播放历史、歌单中的引用
+        favoriteRepository.deleteBySongId(id);
+        playHistoryRepository.deleteBySongId(id);
+        playlistItemRepository.deleteBySongId(id);
+
+        // 清理本地媒体文件：封面、音频、歌词
         fileUploadService.deleteFile(song.getCoverUrl());
         fileUploadService.deleteFile(song.getAudioUrl());
         fileUploadService.deleteFile(song.getLyricUrl());

@@ -606,13 +606,52 @@ async function saveEdit() {
   adminSaving.value = false;
 }
 
+function cleanupLocalSongCache(songId: number) {
+  // 正在播放的就是被删歌曲：停止播放、清空播放器与歌词页
+  if (currentSong.value?.id === songId) {
+    const a = audioElement.value;
+    if (a) { a.pause(); a.removeAttribute('src'); a.load(); }
+    isPlaying.value = false;
+    currentSong.value = null;
+    showDetail.value = false;
+    lyricLines.value = [];
+    currentLyricIndex.value = -1;
+    resetPlaybackPosition();
+  }
+  // 最近播放记录
+  recentSongIds.value = recentSongIds.value.filter(id => id !== songId);
+  // 收藏集合
+  if (likedSongIds.value.has(songId)) {
+    const n = new Set(likedSongIds.value);
+    n.delete(songId);
+    likedSongIds.value = n;
+  }
+  // 歌单中的引用（当前打开的歌单 + 歌单菜单缓存）
+  if (activePlaylist.value) {
+    activePlaylist.value.songs = activePlaylist.value.songs.filter(s => s.id !== songId);
+  }
+  if (playlistContainsIds.value.has(songId)) {
+    const n = new Set(playlistContainsIds.value);
+    n.delete(songId);
+    playlistContainsIds.value = n;
+  }
+}
+
 async function deleteSongItem(s: Song) {
-  if (!confirm(`确定删除「${s.title}」吗？`)) return;
+  if (!confirm(`确定删除「${s.title}」吗？删除后歌曲文件与相关记录（收藏、播放历史、歌单引用）将一并清除。`)) return;
+  adminSaving.value = true; adminMsg.value = '';
   try {
     const r = await fetch(`/api/admin/songs/${s.id}`, { method: 'DELETE', headers: apiHeaders() });
-    if (r.ok) { adminMsg.value = '删除成功'; loadSongs(); }
-    else { const e = await r.json(); adminMsg.value = e.error || '删除失败'; }
+    if (r.ok) {
+      adminMsg.value = '删除成功';
+      cleanupLocalSongCache(s.id);
+      loadSongs();
+    } else {
+      const e = await r.json();
+      adminMsg.value = e.error || '删除失败';
+    }
   } catch { adminMsg.value = '删除失败'; }
+  adminSaving.value = false;
 }
 
 async function uploadFileToServer(file: File, type: string): Promise<string> {

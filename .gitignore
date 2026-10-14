@@ -31,6 +31,7 @@ backend/target/
 backend/uploads/audio/*
 backend/uploads/covers/*
 backend/uploads/lyrics/*
+backend/uploads/avatars/*
 !backend/uploads/audio/.gitkeep
 !backend/uploads/covers/.gitkeep
 !backend/uploads/lyrics/.gitkeep

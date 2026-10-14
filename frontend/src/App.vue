@@ -198,6 +198,34 @@ if (authToken.value) {
 
 const likedSongList = computed(() => songs.value.filter(s => likedSongIds.value.has(s.id)));
 const recentSongs = computed(() => recentSongIds.value.map(id => songs.value.find(s => s.id === id)).filter((s): s is Song => Boolean(s)));
+
+// —— 首页推荐 ——
+const greeting = computed(() => {
+  const h = new Date().getHours();
+  if (h < 5) return '夜深了';
+  if (h < 11) return '早上好';
+  if (h < 13) return '中午好';
+  if (h < 18) return '下午好';
+  return '晚上好';
+});
+
+// 推荐逻辑：优先推荐「收藏 / 最近播放」歌手的其他歌，不足再按曲库顺序补足；
+// 排除最近播放过与当前正在播放的歌，结果确定性稳定、不随播放跳动。
+const recommendedSongs = computed<Song[]>(() => {
+  const preferredArtists = new Set<string>();
+  likedSongList.value.forEach((s) => preferredArtists.add(s.artist));
+  recentSongs.value.forEach((s) => preferredArtists.add(s.artist));
+  const excluded = new Set<number>(recentSongIds.value);
+  if (currentSong.value) excluded.add(currentSong.value.id);
+
+  const preferred: Song[] = [];
+  const others: Song[] = [];
+  for (const s of songs.value) {
+    if (excluded.has(s.id)) continue;
+    (preferredArtists.has(s.artist) ? preferred : others).push(s);
+  }
+  return [...preferred, ...others].slice(0, 12);
+});
 const filteredSongs = computed(() => {
   const k = searchKeyword.value.trim().toLowerCase();
   if (!k) return songs.value;
@@ -1069,7 +1097,7 @@ async function importBatchSongs() {
 
     <section v-if="activeView !== 'admin'" class="content">
       <header class="topbar">
-        <div>
+        <div v-if="activeView !== 'discover'">
           <p class="eyebrow">{{ viewTitle.eyebrow }}</p>
           <h1>{{ viewTitle.title }}</h1>
         </div>
@@ -1081,21 +1109,110 @@ async function importBatchSongs() {
 
       <p v-if="playlistMsg" class="status-text playlist-notice" :class="{ warning: playlistMsgError }" role="status">{{ playlistMsg }}</p>
 
-      <section v-if="currentSong && activeView === 'discover'" class="now-playing">
-        <div class="cover-large" :style="{ background: currentSong.color }">
-          <img :src="currentSong.coverUrl" :alt="`${currentSong.title} 封面`" @load="markCoverLoaded" @error="hideBrokenImage" />
-          <span>{{ currentSong.cover }}</span>
-        </div>
-        <div class="track-summary">
-          <p class="eyebrow">正在播放</p>
-          <h2>{{ currentSong.title }}</h2>
-          <p>{{ currentSong.artist }} · {{ currentSong.album }}</p>
-          <button class="primary-action" type="button" @click="togglePlayback">
-            <Pause v-if="isPlaying" :size="20" /><Play v-else :size="20" />
-            {{ isPlaying ? '暂停' : '播放' }}
+      <!-- ============ 首页推荐 ============ -->
+      <template v-if="activeView === 'discover'">
+        <section class="home-greeting">
+          <div>
+            <h2 class="home-greeting-title">{{ greeting }}<template v-if="authUser">，{{ authUser.nickname || authUser.username }}</template></h2>
+            <p class="home-greeting-sub">为你精选的音乐，随时开启。</p>
+          </div>
+        </section>
+
+        <section class="home-shortcuts" aria-label="快捷入口">
+          <button class="home-shortcut" type="button" @click="switchView('library')">
+            <span class="home-shortcut-icon recent"><Clock3 :size="22" /></span>
+            <span class="home-shortcut-label">最近播放</span>
           </button>
-        </div>
-      </section>
+          <button class="home-shortcut" type="button" @click="switchView('library')">
+            <span class="home-shortcut-icon liked"><Heart :size="22" /></span>
+            <span class="home-shortcut-label">收藏的歌</span>
+          </button>
+          <button class="home-shortcut" type="button" @click="switchView('library')">
+            <span class="home-shortcut-icon playlist"><ListMusic :size="22" /></span>
+            <span class="home-shortcut-label">我的歌单</span>
+          </button>
+          <button class="home-shortcut" type="button" @click="playRandomSong(songs)">
+            <span class="home-shortcut-icon shuffle"><Shuffle :size="22" /></span>
+            <span class="home-shortcut-label">随机播放</span>
+          </button>
+        </section>
+
+        <section v-if="currentSong" class="home-now" role="button" tabindex="0" aria-label="打开正在播放" @click="openDetail" @keydown.enter.self="openDetail">
+          <div class="home-now-cover" :style="{ background: currentSong.color }">
+            <img :src="currentSong.coverUrl" :alt="`${currentSong.title} 封面`" @load="markCoverLoaded" @error="hideBrokenImage" />
+            <span>{{ currentSong.cover }}</span>
+          </div>
+          <div class="home-now-info">
+            <p class="home-now-eyebrow">正在播放</p>
+            <h2>{{ currentSong.title }}</h2>
+            <p class="home-now-meta">{{ currentSong.artist }} · {{ currentSong.album }}</p>
+          </div>
+          <button class="home-now-play" type="button" :aria-label="isPlaying ? '暂停' : '播放'" @click.stop="togglePlayback">
+            <Pause v-if="isPlaying" :size="22" fill="currentColor" /><Play v-else :size="22" fill="currentColor" />
+          </button>
+        </section>
+
+        <section class="home-section">
+          <div class="home-section-head">
+            <h3>最近播放</h3>
+            <button v-if="recentSongs.length" class="home-see-all" type="button" @click="switchView('library')">查看全部</button>
+          </div>
+          <div v-if="recentSongs.length" class="home-row">
+            <button v-for="song in recentSongs.slice(0, 12)" :key="'r' + song.id" class="home-song-card" type="button" @click="selectSong(song)">
+              <div class="home-card-cover" :style="{ background: song.color }">
+                <img :src="song.coverUrl" :alt="`${song.title} 封面`" @load="markCoverLoaded" @error="hideBrokenImage" />
+                <span class="home-card-fallback">{{ song.cover }}</span>
+                <span class="home-card-play"><Play :size="16" fill="currentColor" /></span>
+              </div>
+              <div class="home-card-meta">
+                <strong>{{ song.title }}</strong>
+                <small>{{ song.artist }}</small>
+              </div>
+            </button>
+          </div>
+          <p v-else class="home-empty">播放歌曲后会出现在这里。</p>
+        </section>
+
+        <section class="home-section">
+          <div class="home-section-head">
+            <h3>为你推荐</h3>
+          </div>
+          <div v-if="recommendedSongs.length" class="home-row">
+            <button v-for="song in recommendedSongs" :key="'rc' + song.id" class="home-song-card" type="button" @click="selectSong(song)">
+              <div class="home-card-cover" :style="{ background: song.color }">
+                <img :src="song.coverUrl" :alt="`${song.title} 封面`" @load="markCoverLoaded" @error="hideBrokenImage" />
+                <span class="home-card-fallback">{{ song.cover }}</span>
+                <span class="home-card-play"><Play :size="16" fill="currentColor" /></span>
+              </div>
+              <div class="home-card-meta">
+                <strong>{{ song.title }}</strong>
+                <small>{{ song.artist }}</small>
+              </div>
+            </button>
+          </div>
+          <p v-else class="home-empty">暂无推荐，去导入一些歌曲吧。</p>
+        </section>
+
+        <section class="home-section">
+          <div class="home-section-head">
+            <h3>我的歌单</h3>
+            <button class="home-see-all" type="button" @click="switchView('library')">查看全部</button>
+          </div>
+          <div v-if="playlists.length" class="home-row">
+            <button v-for="p in playlists.slice(0, 12)" :key="'p' + p.id" class="home-song-card" type="button" @click="openPlaylist(p)">
+              <div class="home-card-cover home-playlist-cover"><ListMusic :size="28" /></div>
+              <div class="home-card-meta">
+                <strong>{{ p.name }}</strong>
+                <small>{{ p.songCount }} 首{{ p.description ? ' · ' + p.description : '' }}</small>
+              </div>
+            </button>
+          </div>
+          <p v-else class="home-empty">
+            <template v-if="authToken">还没有歌单，去「我的音乐」新建一个吧。</template>
+            <template v-else>登录后即可创建歌单。</template>
+          </p>
+        </section>
+      </template>
 
       <section v-if="activeView === 'library'" class="library-grid">
         <article class="metric-card"><span>收藏歌曲</span><strong>{{ likedSongList.length }}</strong></article>
@@ -1166,7 +1283,7 @@ async function importBatchSongs() {
         <ProfileView :user="authUser" :token="authToken || ''" @update-user="(u) => (authUser = u)" />
       </section>
 
-      <section v-if="activeView !== 'playlist' && activeView !== 'profile'" class="song-table main-song-table" aria-label="歌曲列表">
+      <section v-if="activeView === 'search' || activeView === 'library'" class="song-table main-song-table" aria-label="歌曲列表">
         <div class="table-heading">
           <h2>{{ songSectionTitle }}</h2>
           <button class="ghost-button" type="button" @click="playRandomSong(visibleSongs)"><Shuffle :size="18" />随机播放</button>

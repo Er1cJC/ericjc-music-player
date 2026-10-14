@@ -97,6 +97,10 @@ const currentSeconds = ref(0);
 const audioDuration = ref(0);
 const progress = ref(0);
 const volume = ref(72);
+// 刷新后待恢复的播放进度（秒）；由 loadedmetadata 里 seek 到该位置后清空
+const pendingSeekTime = ref<number | null>(null);
+// 播放状态持久化键：记录 { songId, time }，用于刷新后还原
+const PLAYER_STATE_KEY = 'musicPlayerState';
 const likedSongIds = ref<Set<number>>(new Set());
 const recentSongIds = ref<number[]>([]);
 const searchKeyword = ref('');
@@ -217,9 +221,14 @@ const viewTitle = computed(() => {
   return { eyebrow: activeView.value === 'discover' ? '推荐' : activeView.value === 'search' ? '搜索' : '个人音乐', title: activeView.value === 'discover' ? '今天想听什么？' : activeView.value === 'search' ? '搜索音乐' : '我的音乐' };
 });
 
-onMounted(() => { loadSongs(); document.addEventListener('keydown', handlePlaylistEscape); });
+onMounted(async () => {
+  document.addEventListener('keydown', handlePlaylistEscape);
+  await loadSongs();
+  // 恢复上次播放的歌曲与进度；首次打开（无记录）则保持空状态
+  restorePlayback();
+});
 onUnmounted(() => { document.removeEventListener('keydown', handlePlaylistEscape); clearTimeout(playlistMessageTimer); releaseBatchCoverPreviews(); });
-watch(currentSong, (s) => { if (s) loadLyrics(s); });
+watch(currentSong, (s) => { if (s) { loadLyrics(s); persistPlayerState(true); } });
 
 watch(volume, v => { if (audioElement.value) audioElement.value.volume = v / 100; });
 
@@ -249,7 +258,7 @@ async function loadSongs() {
   } catch {
     songs.value = fallbackSongs;
     errorMessage.value = '后端暂时不可用，已显示本地示例数据。';
-  } finally { currentSong.value = songs.value[0] ?? null; isLoading.value = false; }
+  } finally { isLoading.value = false; }
   if (authToken.value) { loadFavorites(); loadHistory(); loadPlaylists(); }
 }
 
@@ -473,11 +482,60 @@ function addToRecent(song: Song) {
 function playRandomSong(list: Song[] = songs.value) { if (list.length) selectSong(list[Math.floor(Math.random() * list.length)]); }
 function nextSong() { if (!currentSong.value || !songs.value.length) return; const i = songs.value.findIndex(s => s.id === currentSong.value?.id); currentSong.value = songs.value[(i+1)%songs.value.length]; resetPlaybackPosition(); playCurrentSong(); }
 function previousSong() { if (!currentSong.value || !songs.value.length) return; const i = songs.value.findIndex(s => s.id === currentSong.value?.id); currentSong.value = songs.value[(i-1+songs.value.length)%songs.value.length]; resetPlaybackPosition(); playCurrentSong(); }
+let lastPersistAt = 0;
+/** 持久化当前播放状态（歌曲 + 进度）。resetTime=true 表示切歌，进度归零 */
+function persistPlayerState(resetTime = false) {
+  const song = currentSong.value;
+  if (!song) return;
+  const now = Date.now();
+  if (!resetTime && now - lastPersistAt < 1000) return; // 节流：最多每秒写一次 localStorage
+  lastPersistAt = now;
+  const time = resetTime ? 0 : Math.round(audioElement.value?.currentTime ?? currentSeconds.value);
+  try { localStorage.setItem(PLAYER_STATE_KEY, JSON.stringify({ songId: song.id, time })); } catch {}
+}
+
+/** 刷新后恢复上次的歌曲与进度；找不到对应歌曲则清除记录并保持空状态 */
+function restorePlayback() {
+  if (currentSong.value) return; // 已有选中歌曲则不覆盖
+  try {
+    const raw = localStorage.getItem(PLAYER_STATE_KEY);
+    if (!raw) return;
+    const state = JSON.parse(raw) as { songId?: unknown; time?: unknown };
+    if (typeof state.songId !== 'number') return;
+    const song = songs.value.find((s) => s.id === state.songId);
+    if (!song) { localStorage.removeItem(PLAYER_STATE_KEY); return; }
+    currentSong.value = song;
+    if (typeof state.time === 'number' && state.time > 0) pendingSeekTime.value = state.time;
+  } catch { localStorage.removeItem(PLAYER_STATE_KEY); }
+}
+
 function resetPlaybackPosition() { progress.value = 0; currentSeconds.value = 0; audioDuration.value = 0; }
 async function togglePlayback() { if (!currentSong.value) return; if (isPlaying.value) { audioElement.value?.pause(); isPlaying.value = false; } else await playCurrentSong(); }
 async function playCurrentSong() { await nextTick(); const a = audioElement.value; if (!a) return; a.volume = volume.value/100; try { await a.play(); isPlaying.value = true; } catch { isPlaying.value = false; } }
-function updateMetadata() { const a = audioElement.value; if (a) audioDuration.value = Number.isFinite(a.duration) ? a.duration : currentSong.value?.duration || 0; }
-function updateProgress() { const a = audioElement.value; if (a) { currentSeconds.value = a.currentTime; progress.value = activeDuration.value > 0 ? Math.round((a.currentTime/activeDuration.value)*1000)/10 : 0; updateLyricIndex(a.currentTime); } }
+function updateMetadata() {
+  const a = audioElement.value;
+  if (!a) return;
+  audioDuration.value = Number.isFinite(a.duration) ? a.duration : currentSong.value?.duration || 0;
+  // 刷新恢复：seek 到上次保存的进度
+  if (pendingSeekTime.value !== null) {
+    const t = pendingSeekTime.value;
+    pendingSeekTime.value = null;
+    if (Number.isFinite(a.duration) && t > 0 && t < a.duration - 0.5) {
+      a.currentTime = t;
+      currentSeconds.value = t;
+      progress.value = activeDuration.value > 0 ? Math.round((t / activeDuration.value) * 1000) / 10 : 0;
+    }
+  }
+}
+function updateProgress() {
+  const a = audioElement.value;
+  if (a) {
+    currentSeconds.value = a.currentTime;
+    progress.value = activeDuration.value > 0 ? Math.round((a.currentTime / activeDuration.value) * 1000) / 10 : 0;
+    updateLyricIndex(a.currentTime);
+    persistPlayerState();
+  }
+}
 function updateLyricIndex(time: number) {
   // 行级高亮在这里更新（timeupdate 频率低）；逐字流光由 LyricStage 内部用 rAF 自行处理。
   // 纯文本歌词没有时间轴，不参与高亮。
@@ -608,6 +666,8 @@ function cleanupLocalSongCache(songId: number) {
     lyricLines.value = [];
     currentLyricIndex.value = -1;
     resetPlaybackPosition();
+    // 播放状态指向已删除的歌曲，一并清除，避免刷新时尝试恢复失效引用
+    try { localStorage.removeItem(PLAYER_STATE_KEY); } catch {}
   }
   // 最近播放记录
   recentSongIds.value = recentSongIds.value.filter(id => id !== songId);

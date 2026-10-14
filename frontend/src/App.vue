@@ -61,6 +61,7 @@ type SongResponse = {
 };
 
 type ViewKey = 'discover' | 'search' | 'library' | 'playlist' | 'admin' | 'profile';
+type AdminSortKey = 'imported' | 'title' | 'artist' | 'album';
 
 type PlaylistSummary = { id: number; name: string; description: string | null; songCount: number; createdAt: string };
 type PlaylistDetail = { id: number; name: string; description: string | null; songs: Song[] };
@@ -83,6 +84,9 @@ type BatchSongItem = {
   error: string;
 };
 
+const BATCH_MAX_FILES = 100;
+const BATCH_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+
 const fallbackSongs: Song[] = [
   toDisplaySong({ id: 1, title: 'Echoes', artist: 'Pink Floyd', album: 'Meddle', duration: 1412, coverUrl: '/uploads/covers/Pink%20Floyd%20-%20Echoes.jpg', audioUrl: '/uploads/audio/Pink%20Floyd%20-%20Echoes.flac', lyricUrl: null, liked: false }),
   toDisplaySong({ id: 2, title: 'Goldener Schnitt', artist: 'Sacco', album: 'Single', duration: 52, coverUrl: '/uploads/covers/Sacco%20-%20Goldener%20Schnitt.jpg', audioUrl: '/uploads/audio/Sacco%20-%20Goldener%20Schnitt.wav', lyricUrl: null, liked: false }),
@@ -104,6 +108,7 @@ const PLAYER_STATE_KEY = 'musicPlayerState';
 const likedSongIds = ref<Set<number>>(new Set());
 const recentSongIds = ref<number[]>([]);
 const searchKeyword = ref('');
+const searchField = ref<'all' | 'title' | 'artist' | 'album'>('all');
 const isLoading = ref(false);
 const errorMessage = ref('');
 const activeView = ref<ViewKey>('discover');
@@ -144,9 +149,13 @@ const activeAdminTab = ref<'songs' | 'users' | 'upload' | 'batch'>('songs');
 const adminUsers = ref<AdminUser[]>([]);
 const adminSaving = ref(false);
 const adminMsg = ref('');
+const adminSongKeyword = ref('');
+const adminSortKey = ref<AdminSortKey>('title');
+const adminSortDirection = ref<'asc' | 'desc'>('asc');
 const batchItems = ref<BatchSongItem[]>([]);
 const batchProgress = ref('');
 const batchImporting = ref(false);
+const batchTotalBytes = computed(() => batchItems.value.reduce((total, item) => total + item.file.size, 0));
 
 const editSong = ref<Song | null>(null);
 const editedTitle = ref('');
@@ -229,7 +238,20 @@ const recommendedSongs = computed<Song[]>(() => {
 const filteredSongs = computed(() => {
   const k = searchKeyword.value.trim().toLowerCase();
   if (!k) return songs.value;
-  return songs.value.filter(s => [s.title, s.artist, s.album].some(t => t.toLowerCase().includes(k)));
+  return songs.value.filter((s) => {
+    if (searchField.value === 'title') return s.title.toLowerCase().includes(k);
+    if (searchField.value === 'artist') return s.artist.toLowerCase().includes(k);
+    if (searchField.value === 'album') return s.album.toLowerCase().includes(k);
+    return [s.title, s.artist, s.album].some(t => t.toLowerCase().includes(k));
+  });
+});
+const adminSongs = computed(() => {
+  const keyword = adminSongKeyword.value.trim().toLowerCase();
+  const list = songs.value.filter((song) => !keyword || [song.title, song.artist, song.album].some((value) => value.toLowerCase().includes(keyword)));
+  if (adminSortKey.value === 'imported') return list;
+  const field = adminSortKey.value as Exclude<AdminSortKey, 'imported'>;
+  const direction = adminSortDirection.value === 'asc' ? 1 : -1;
+  return [...list].sort((a, b) => compareAdminText(a[field], b[field], direction) || a.id - b.id);
 });
 const visibleSongs = computed(() => {
   if (activeView.value === 'search') return filteredSongs.value;
@@ -482,6 +504,35 @@ function toDisplaySong(s: SongResponse): Song { return { ...s, cover: getCoverTe
 function getCoverText(t: string) { return t.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase(); }
 function getSongColor(id: number) { return ['#3b82f6','#111827','#d97706','#0f766e','#7c3aed','#be123c'][(id-1)%6]; }
 function formatTime(s: number) { return `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`; }
+
+const adminPinyinCollator = new Intl.Collator('zh-Hans-u-co-pinyin', { sensitivity: 'base', numeric: true });
+const adminEnglishCollator = new Intl.Collator('en', { sensitivity: 'base', numeric: true });
+function adminTextGroup(value: string) {
+  const first = value.trim().charAt(0);
+  if (/^[\u3400-\u9fff]$/.test(first)) return 0;
+  if (/^[A-Za-z]$/.test(first)) return 1;
+  return 2;
+}
+function compareAdminText(a: string, b: string, direction = 1) {
+  const groupDiff = adminTextGroup(a) - adminTextGroup(b);
+  if (groupDiff) return groupDiff;
+  const group = adminTextGroup(a);
+  return (group === 0 ? adminPinyinCollator : group === 1 ? adminEnglishCollator : adminPinyinCollator).compare(a, b) * direction;
+}
+
+function searchByField(field: 'title' | 'artist' | 'album', value: string) {
+  searchKeyword.value = value;
+  searchField.value = field;
+  showDetail.value = false;
+  activeView.value = 'search';
+}
+function handleMetadataKeydown(event: KeyboardEvent, field: 'title' | 'artist' | 'album', value: string) {
+  if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); searchByField(field, value); }
+}
+function toggleAdminSort(key: AdminSortKey) {
+  if (adminSortKey.value === key) adminSortDirection.value = adminSortDirection.value === 'asc' ? 'desc' : 'asc';
+  else { adminSortKey.value = key; adminSortDirection.value = 'asc'; }
+}
 
 function selectSong(song: Song) { currentSong.value = song; addToRecent(song); resetPlaybackPosition(); playCurrentSong(); }
 
@@ -878,23 +929,35 @@ function batchItemHasMissing(item: BatchSongItem) {
   return !item.title.trim() || !item.artist.trim() || !item.album.trim();
 }
 
+function formatFileSize(bytes: number) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 async function handleBatchAudioSelect(e: Event) {
   const input = e.target as HTMLInputElement;
   const selectedFiles = Array.from(input.files || []);
   input.value = '';
   if (!selectedFiles.length) return;
-  if (selectedFiles.length > 50) {
-    adminMsg.value = '一次最多选择 50 个音频文件';
-  }
-
   const existingKeys = new Set(batchItems.value.map(item => `${item.file.name}:${item.file.size}`));
   const newFiles: File[] = [];
   let duplicateCount = 0;
-  for (const file of selectedFiles.slice(0, 50)) {
+  let limitCount = 0;
+  let totalBytes = batchTotalBytes.value;
+  for (const file of selectedFiles) {
     const key = `${file.name}:${file.size}`;
     if (existingKeys.has(key)) { duplicateCount++; continue; }
+    if (batchItems.value.length + newFiles.length >= BATCH_MAX_FILES || totalBytes + file.size > BATCH_MAX_BYTES) {
+      limitCount++;
+      continue;
+    }
     existingKeys.add(key);
     newFiles.push(file);
+    totalBytes += file.size;
+  }
+  if (limitCount > 0) {
+    adminMsg.value = `已跳过 ${limitCount} 个文件，批量导入上限为 ${BATCH_MAX_FILES} 首且总大小不超过 ${formatFileSize(BATCH_MAX_BYTES)}`;
   }
   if (duplicateCount > 0) {
     adminMsg.value = `${adminMsg.value ? `${adminMsg.value}；` : ''}已跳过 ${duplicateCount} 个重复文件`;
@@ -1103,7 +1166,7 @@ async function importBatchSongs() {
         </div>
         <label class="search-box">
           <Search :size="18" />
-          <input v-model="searchKeyword" type="search" placeholder="搜索歌曲、歌手、专辑" @focus="switchView('search')" />
+          <input v-model="searchKeyword" type="search" placeholder="搜索您喜欢的歌喵" @focus="switchView('search')" @input="searchField = 'all'" />
         </label>
       </header>
 
@@ -1145,7 +1208,11 @@ async function importBatchSongs() {
           <div class="home-now-info">
             <p class="home-now-eyebrow">正在播放</p>
             <h2>{{ currentSong.title }}</h2>
-            <p class="home-now-meta">{{ currentSong.artist }} · {{ currentSong.album }}</p>
+            <p class="home-now-meta">
+              <span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('artist', currentSong.artist)" @keydown="handleMetadataKeydown($event, 'artist', currentSong.artist)">{{ currentSong.artist }}</span>
+              <span aria-hidden="true"> · </span>
+              <span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('album', currentSong.album)" @keydown="handleMetadataKeydown($event, 'album', currentSong.album)">{{ currentSong.album }}</span>
+            </p>
           </div>
           <button class="home-now-play" type="button" :aria-label="isPlaying ? '暂停' : '播放'" @click.stop="togglePlayback">
             <Pause v-if="isPlaying" :size="22" fill="currentColor" /><Play v-else :size="22" fill="currentColor" />
@@ -1166,7 +1233,11 @@ async function importBatchSongs() {
               </div>
               <div class="home-card-meta">
                 <strong>{{ song.title }}</strong>
-                <small>{{ song.artist }}</small>
+                <small>
+                  <span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('artist', song.artist)" @keydown="handleMetadataKeydown($event, 'artist', song.artist)">{{ song.artist }}</span>
+                  <span aria-hidden="true"> · </span>
+                  <span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('album', song.album)" @keydown="handleMetadataKeydown($event, 'album', song.album)">{{ song.album }}</span>
+                </small>
               </div>
             </button>
           </div>
@@ -1186,7 +1257,11 @@ async function importBatchSongs() {
               </div>
               <div class="home-card-meta">
                 <strong>{{ song.title }}</strong>
-                <small>{{ song.artist }}</small>
+                <small>
+                  <span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('artist', song.artist)" @keydown="handleMetadataKeydown($event, 'artist', song.artist)">{{ song.artist }}</span>
+                  <span aria-hidden="true"> · </span>
+                  <span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('album', song.album)" @keydown="handleMetadataKeydown($event, 'album', song.album)">{{ song.album }}</span>
+                </small>
               </div>
             </button>
           </div>
@@ -1266,9 +1341,9 @@ async function importBatchSongs() {
             <div v-for="song in activePlaylist.songs" :key="song.id" class="song-row" :class="{ selected: song.id === currentSong?.id }" role="button" tabindex="0" @click="selectSong(song)" @keydown.enter.self="selectSong(song)" @keydown.space.self.prevent="selectSong(song)">
               <span class="song-cell">
                 <span class="cover-small" :style="{ background: song.color }"><img :src="song.coverUrl" :alt="`${song.title} 封面`" @load="markCoverLoaded" @error="hideBrokenImage" /><span>{{ song.cover }}</span></span>
-                <span><strong>{{ song.title }}</strong><small>{{ song.artist }}</small></span>
+                <span><strong>{{ song.title }}</strong><small><span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('artist', song.artist)" @keydown="handleMetadataKeydown($event, 'artist', song.artist)">{{ song.artist }}</span></small></span>
               </span>
-              <span class="song-album">{{ song.album }}</span><span>{{ formatTime(song.duration) }}</span>
+              <span class="song-album"><span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('album', song.album)" @keydown="handleMetadataKeydown($event, 'album', song.album)">{{ song.album }}</span></span><span>{{ formatTime(song.duration) }}</span>
               <span class="row-actions">
                 <button class="icon-button" type="button" title="收藏歌曲" aria-label="收藏歌曲" @click.stop="toggleLike(song)"><Heart :size="18" :fill="likedSongIds.has(song.id) ? 'currentColor' : 'none'" /></button>
                 <button class="icon-button danger" type="button" title="从歌单移除" aria-label="从歌单移除" :disabled="playlistBusy" @click.stop="removePlaylistSong(song)"><Trash2 :size="18" /></button>
@@ -1294,9 +1369,9 @@ async function importBatchSongs() {
         <div v-for="song in visibleSongs" :key="song.id" class="song-row" :class="{ selected: song.id === currentSong?.id }" role="button" tabindex="0" @click="selectSong(song)" @keydown.enter.self="selectSong(song)" @keydown.space.self.prevent="selectSong(song)">
           <span class="song-cell">
             <span class="cover-small" :style="{ background: song.color }"><img :src="song.coverUrl" :alt="`${song.title} 封面`" @load="markCoverLoaded" @error="hideBrokenImage" /><span>{{ song.cover }}</span></span>
-            <span><strong>{{ song.title }}</strong><small>{{ song.artist }}</small></span>
+            <span><strong>{{ song.title }}</strong><small><span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('artist', song.artist)" @keydown="handleMetadataKeydown($event, 'artist', song.artist)">{{ song.artist }}</span></small></span>
           </span>
-          <span class="song-album">{{ song.album }}</span>
+          <span class="song-album"><span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('album', song.album)" @keydown="handleMetadataKeydown($event, 'album', song.album)">{{ song.album }}</span></span>
           <span>{{ formatTime(song.duration) }}</span>
           <span class="row-actions">
             <button class="icon-button" type="button" aria-label="收藏歌曲" @click.stop="toggleLike(song)">
@@ -1313,9 +1388,9 @@ async function importBatchSongs() {
         <button v-for="song in recentSongs" :key="'r'+song.id" class="song-row" :class="{ selected: song.id === currentSong?.id }" type="button" @click="selectSong(song)">
           <span class="song-cell">
             <span class="cover-small" :style="{ background: song.color }"><img :src="song.coverUrl" :alt="`${song.title} 封面`" @load="markCoverLoaded" @error="hideBrokenImage" /><span>{{ song.cover }}</span></span>
-            <span><strong>{{ song.title }}</strong><small>{{ song.artist }}</small></span>
+            <span><strong>{{ song.title }}</strong><small><span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('artist', song.artist)" @keydown="handleMetadataKeydown($event, 'artist', song.artist)">{{ song.artist }}</span></small></span>
           </span>
-          <span>{{ song.album }}</span><span>{{ formatTime(song.duration) }}</span><span></span>
+          <span><span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('album', song.album)" @keydown="handleMetadataKeydown($event, 'album', song.album)">{{ song.album }}</span></span><span>{{ formatTime(song.duration) }}</span><span></span>
         </button>
         <p v-if="recentSongs.length === 0" class="status-text">播放歌曲后会出现在这里。</p>
       </section>
@@ -1337,14 +1412,24 @@ async function importBatchSongs() {
 
       <p v-if="adminMsg" class="status-text" :class="{ warning: adminMsg.includes('失败') }">{{ adminMsg }}</p>
 
-      <section v-if="activeAdminTab === 'songs'" class="song-table">
-        <div class="song-row header-row"><span>歌曲</span><span>专辑</span><span>时长</span><span>操作</span></div>
-        <div v-for="song in songs" :key="song.id" class="song-row admin-song-row">
+      <section v-if="activeAdminTab === 'songs'" class="song-table admin-song-table">
+        <div class="admin-song-toolbar">
+          <label class="admin-song-search"><Search :size="17" /><input v-model="adminSongKeyword" type="search" placeholder="搜索歌曲标题、作者或专辑" /></label>
+          <div class="admin-sort-summary"><span>{{ adminSongs.length }} 首歌曲</span><span class="sort-order-hint">中文 → 英文 → 符号</span><label class="admin-sort-select"><span>排序</span><select v-model="adminSortKey"><option value="imported">导入顺序</option><option value="title">歌曲名</option><option value="artist">作者</option><option value="album">专辑</option></select></label><button class="sort-direction" type="button" :disabled="adminSortKey === 'imported'" @click="toggleAdminSort(adminSortKey)">{{ adminSortDirection === 'asc' ? '升序' : '降序' }}</button></div>
+        </div>
+        <div class="song-row header-row admin-song-grid">
+          <button class="sort-heading" type="button" @click="toggleAdminSort('title')">歌曲 <span v-if="adminSortKey === 'title'">{{ adminSortDirection === 'asc' ? '↑' : '↓' }}</span></button>
+          <button class="sort-heading" type="button" @click="toggleAdminSort('artist')">作者 <span v-if="adminSortKey === 'artist'">{{ adminSortDirection === 'asc' ? '↑' : '↓' }}</span></button>
+          <button class="sort-heading admin-album" type="button" @click="toggleAdminSort('album')">专辑 <span v-if="adminSortKey === 'album'">{{ adminSortDirection === 'asc' ? '↑' : '↓' }}</span></button>
+          <span>时长</span><span>操作</span>
+        </div>
+        <div v-for="song in adminSongs" :key="song.id" class="song-row admin-song-row admin-song-grid">
           <span class="song-cell">
             <span class="cover-small" :style="{ background: song.color }"><img :src="song.coverUrl" :alt="song.title" @load="markCoverLoaded" @error="hideBrokenImage" /><span>{{ song.cover }}</span></span>
-            <span><strong>{{ song.title }}</strong><small>{{ song.artist }}</small></span>
+            <span><strong>{{ song.title }}</strong></span>
           </span>
-          <span>{{ song.album }}</span>
+          <span><span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('artist', song.artist)" @keydown="handleMetadataKeydown($event, 'artist', song.artist)">{{ song.artist }}</span></span>
+          <span class="admin-album"><span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('album', song.album)" @keydown="handleMetadataKeydown($event, 'album', song.album)">{{ song.album }}</span></span>
           <span>{{ formatTime(song.duration) }}</span>
           <span class="row-actions">
             <button class="icon-button" type="button" title="编辑" @click="startEditSong(song)"><Save :size="16" /></button>
@@ -1372,7 +1457,7 @@ async function importBatchSongs() {
         <div class="batch-toolbar">
           <div>
             <h2>批量导入歌曲</h2>
-            <p class="batch-count">共 {{ batchItems.length }} 首</p>
+            <p class="batch-count">共 {{ batchItems.length }} 首 · {{ formatFileSize(batchTotalBytes) }} / 2 GB</p>
           </div>
           <div class="batch-toolbar-actions">
             <button class="ghost-button" type="button" :disabled="batchImporting || !batchItems.length" @click="clearBatchItems">清空</button>
@@ -1388,7 +1473,7 @@ async function importBatchSongs() {
         </label>
 
         <p v-if="batchProgress" class="status-text batch-progress">{{ batchProgress }}</p>
-        <p v-if="!batchItems.length" class="status-text">选择多个音频文件，自动读取歌曲信息并批量导入。</p>
+        <p v-if="!batchItems.length" class="status-text">选择多个音频文件，自动读取歌曲信息并批量导入。单批最多 100 首，总大小不超过 2 GB。</p>
 
         <div v-else class="batch-list">
           <article v-for="(item, index) in batchItems" :key="`${item.file.name}-${item.file.size}-${index}`" class="batch-item" :class="`batch-item-${item.status}`">
@@ -1488,7 +1573,7 @@ async function importBatchSongs() {
       <audio ref="audioElement" :src="currentSong.audioUrl" preload="metadata" @loadedmetadata="updateMetadata" @timeupdate="updateProgress" @ended="handlePlaybackEnded" @play="isPlaying = true" @pause="isPlaying = false" @error="handleAudioError" />
       <div class="mini-track" @click="openDetail">
         <div class="cover-small" :style="{ background: currentSong.color }"><img :src="currentSong.coverUrl" :alt="`${currentSong.title} 封面`" @load="markCoverLoaded" @error="hideBrokenImage" /><span>{{ currentSong.cover }}</span></div>
-        <div><strong>{{ currentSong.title }}</strong><small>{{ currentSong.artist }}</small></div>
+        <div><strong>{{ currentSong.title }}</strong><small><span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('artist', currentSong.artist)" @keydown="handleMetadataKeydown($event, 'artist', currentSong.artist)">{{ currentSong.artist }}</span><span aria-hidden="true"> · </span><span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('album', currentSong.album)" @keydown="handleMetadataKeydown($event, 'album', currentSong.album)">{{ currentSong.album }}</span></small></div>
       </div>
       <div class="transport">
         <div class="transport-buttons">
@@ -1517,8 +1602,8 @@ async function importBatchSongs() {
               </div>
               <div class="detail-info">
                 <h2 class="detail-title">{{ currentSong.title }}</h2>
-                <p class="detail-artist">{{ currentSong.artist }}</p>
-                <p class="detail-album">{{ currentSong.album }}</p>
+                <p class="detail-artist metadata-link" role="button" tabindex="0" @click="searchByField('artist', currentSong.artist)" @keydown="handleMetadataKeydown($event, 'artist', currentSong.artist)">{{ currentSong.artist }}</p>
+                <p class="detail-album metadata-link" role="button" tabindex="0" @click="searchByField('album', currentSong.album)" @keydown="handleMetadataKeydown($event, 'album', currentSong.album)">{{ currentSong.album }}</p>
               </div>
             </div>
 
@@ -1539,7 +1624,7 @@ async function importBatchSongs() {
           <footer class="player-bar detail-player-bar">
             <div class="mini-track">
               <div class="cover-small" :style="{ background: currentSong.color }"><img :src="currentSong.coverUrl" :alt="currentSong.title" @load="markCoverLoaded" @error="hideBrokenImage" /><span>{{ currentSong.cover }}</span></div>
-              <div><strong>{{ currentSong.title }}</strong><small>{{ currentSong.artist }}</small></div>
+              <div><strong>{{ currentSong.title }}</strong><small><span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('artist', currentSong.artist)" @keydown="handleMetadataKeydown($event, 'artist', currentSong.artist)">{{ currentSong.artist }}</span><span aria-hidden="true"> · </span><span class="metadata-link" role="button" tabindex="0" @click.stop="searchByField('album', currentSong.album)" @keydown="handleMetadataKeydown($event, 'album', currentSong.album)">{{ currentSong.album }}</span></small></div>
             </div>
             <div class="transport">
               <div class="transport-buttons">
@@ -1594,7 +1679,7 @@ async function importBatchSongs() {
         </div>
       </div>
 
-      <div v-if="editSong" class="modal-backdrop" @click.self="cancelEdit">
+      <div v-if="editSong" class="modal-backdrop" @mousedown.self="cancelEdit">
         <div class="modal-card edit-modal">
           <div class="modal-header">
             <h3>编辑歌曲</h3>

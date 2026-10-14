@@ -170,8 +170,8 @@ public class AdminController {
         if (files == null || files.length == 0) {
             return ResponseEntity.badRequest().body(Map.of("error", "未选择文件"));
         }
-        if (files.length > 20) {
-            return ResponseEntity.badRequest().body(Map.of("error", "单次最多上传 20 个文件"));
+        if (files.length > 100) {
+            return ResponseEntity.badRequest().body(Map.of("error", "单次最多上传 100 个文件"));
         }
 
         String subDir = switch (type == null ? "" : type) {

@@ -3,13 +3,14 @@
  * 个人中心视图。
  *
  * 交互设计要点：
- *  - 头像：悬停浮现相机徽标，点击直接更换（前端 Canvas 居中裁剪 + 压缩后上传）；
+ *  - 头像：悬停浮现相机徽标，点击后进入可拖动、可缩放的方形裁剪器；
  *  - 编辑资料：昵称 / 签名即时预览（草稿直接反映在头部），带字数统计；
  *  - 统计卡片：数字滚动动画，进场错峰上浮；
  *  - 全部动效尊重 prefers-reduced-motion。
  */
 import { computed, onMounted, ref } from 'vue';
 import { Camera, Check, Clock3, Heart, ListMusic, Pencil, X } from '@lucide/vue';
+import ImageCropper from './ImageCropper.vue';
 
 interface ProfileUser {
   userId: number;
@@ -45,6 +46,8 @@ const uploading = ref(false);
 const message = ref('');
 const messageError = ref(false);
 const avatarInput = ref<HTMLInputElement | null>(null);
+const avatarCropFile = ref<File | null>(null);
+const showAvatarCropper = ref(false);
 const avatarPopped = ref(false);
 const joinedText = ref('');
 let messageTimer: ReturnType<typeof setTimeout> | undefined;
@@ -201,60 +204,33 @@ function openAvatarPicker() {
   avatarInput.value?.click();
 }
 
-/** 居中裁剪为正方形并压缩到 512px 的 JPEG */
-async function cropAvatar(file: File): Promise<Blob> {
-  let bitmap: ImageBitmap;
-  try {
-    bitmap = await createImageBitmap(file);
-  } catch {
-    // 旧浏览器兜底
-    const url = URL.createObjectURL(file);
-    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error('图片加载失败'));
-      img.src = url;
-    });
-    bitmap = await createImageBitmap(image);
-    URL.revokeObjectURL(url);
-  }
-
-  const size = 512;
-  const side = Math.min(bitmap.width, bitmap.height);
-  const sx = (bitmap.width - side) / 2;
-  const sy = (bitmap.height - side) / 2;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    bitmap.close();
-    throw new Error('当前浏览器不支持图片处理');
-  }
-  ctx.drawImage(bitmap, sx, sy, side, side, 0, 0, size, size);
-  bitmap.close();
-
-  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85));
-  if (!blob) throw new Error('图片压缩失败');
-  return blob;
-}
-
 async function handleAvatarSelect(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   input.value = '';
   if (!file) return;
-  if (!file.type.startsWith('image/')) {
+  if (file.type && !file.type.startsWith('image/')) {
     notify('请选择图片文件', true);
     return;
   }
 
+  avatarCropFile.value = file;
+  showAvatarCropper.value = true;
+}
+
+function cancelAvatarCrop() {
+  showAvatarCropper.value = false;
+  avatarCropFile.value = null;
+}
+
+async function uploadCroppedAvatar(blob: Blob) {
+  showAvatarCropper.value = false;
+  avatarCropFile.value = null;
   uploading.value = true;
   message.value = '';
   try {
-    const blob = await cropAvatar(file);
     const form = new FormData();
-    form.append('file', blob, 'avatar.jpg');
+    form.append('file', blob, 'avatar.png');
     const res = await fetch('/api/profile/avatar', { method: 'POST', headers: authHeaders(), body: form });
     if (!res.ok) {
       const e = await res.json();
@@ -299,6 +275,14 @@ onMounted(loadProfile);
         <span v-else class="profile-avatar-hint">点击更换头像</span>
         <input ref="avatarInput" type="file" accept="image/*" hidden @change="handleAvatarSelect" />
       </div>
+
+      <ImageCropper
+        v-if="showAvatarCropper && avatarCropFile"
+        :file="avatarCropFile"
+        title="调整头像"
+        @confirm="uploadCroppedAvatar"
+        @cancel="cancelAvatarCrop"
+      />
 
       <div class="profile-id">
         <div class="profile-name-row">

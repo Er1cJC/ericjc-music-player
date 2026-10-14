@@ -7,6 +7,7 @@ import {
   Check,
   Files,
   Home,
+  Image as ImageIcon,
   Library,
   ListMusic,
   LogIn,
@@ -18,6 +19,7 @@ import {
   Plus,
   Save,
   Search,
+  Settings,
   Shield,
   Shuffle,
   SkipBack,
@@ -32,6 +34,7 @@ import {
 } from '@lucide/vue';
 import LyricStage from './components/LyricStage.vue';
 import ProfileView from './components/ProfileView.vue';
+import ImageCropper from './components/ImageCropper.vue';
 import { findActiveIndex, parseLyrics } from './lyrics/parser';
 import type { LyricFormat, LyricLine } from './lyrics/types';
 
@@ -145,7 +148,7 @@ let playlistMessageTimer: ReturnType<typeof setTimeout> | undefined;
 
 const isAdmin = computed(() => authUser.value?.role === 'ADMIN');
 
-const activeAdminTab = ref<'songs' | 'users' | 'upload' | 'batch'>('songs');
+const activeAdminTab = ref<'songs' | 'users' | 'upload' | 'batch' | 'branding'>('songs');
 const adminUsers = ref<AdminUser[]>([]);
 const adminSaving = ref(false);
 const adminMsg = ref('');
@@ -156,6 +159,11 @@ const batchItems = ref<BatchSongItem[]>([]);
 const batchProgress = ref('');
 const batchImporting = ref(false);
 const batchTotalBytes = computed(() => batchItems.value.reduce((total, item) => total + item.file.size, 0));
+const brandingLogoUrl = ref<string | null>(null);
+const brandingCropFile = ref<File | null>(null);
+const showBrandingCropper = ref(false);
+const brandingSaving = ref(false);
+const brandingInput = ref<HTMLInputElement | null>(null);
 
 const editSong = ref<Song | null>(null);
 const editedTitle = ref('');
@@ -267,12 +275,13 @@ const activeDuration = computed(() => audioDuration.value || currentSong.value?.
 const viewTitle = computed(() => {
   if (activeView.value === 'playlist') return { eyebrow: '我的音乐', title: activePlaylist.value?.name || '歌单' };
   if (activeView.value === 'profile') return { eyebrow: '个人中心', title: '我的主页' };
-  if (activeView.value === 'admin') return { eyebrow: '管理后台', title: activeAdminTab.value === 'songs' ? '歌曲管理' : activeAdminTab.value === 'users' ? '用户管理' : activeAdminTab.value === 'batch' ? '批量导入歌曲' : '上传歌曲' };
+  if (activeView.value === 'admin') return { eyebrow: '管理后台', title: activeAdminTab.value === 'songs' ? '歌曲管理' : activeAdminTab.value === 'users' ? '用户管理' : activeAdminTab.value === 'batch' ? '批量导入歌曲' : activeAdminTab.value === 'branding' ? '网站图标' : '上传歌曲' };
   return { eyebrow: activeView.value === 'discover' ? '推荐' : activeView.value === 'search' ? '搜索' : '个人音乐', title: activeView.value === 'discover' ? '今天想听什么？' : activeView.value === 'search' ? '搜索音乐' : '我的音乐' };
 });
 
 onMounted(async () => {
   document.addEventListener('keydown', handlePlaylistEscape);
+  loadBranding();
   await loadSongs();
   // 恢复上次播放的歌曲与进度；首次打开（无记录）则保持空状态
   restorePlayback();
@@ -286,6 +295,58 @@ function apiHeaders(): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
   if (authToken.value) h['Authorization'] = `Bearer ${authToken.value}`;
   return h;
+}
+
+async function loadBranding() {
+  try {
+    const response = await fetch('/api/branding');
+    if (response.ok) {
+      const data = await response.json();
+      brandingLogoUrl.value = data.logoUrl || null;
+    }
+  } catch {}
+}
+
+function openBrandingPicker() {
+  if (!brandingSaving.value) brandingInput.value?.click();
+}
+
+function handleBrandingSelect(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  if (file.type && !file.type.startsWith('image/')) {
+    adminMsg.value = '请选择图片文件';
+    return;
+  }
+  brandingCropFile.value = file;
+  showBrandingCropper.value = true;
+}
+
+function cancelBrandingCrop() {
+  showBrandingCropper.value = false;
+  brandingCropFile.value = null;
+}
+
+async function saveBrandingLogo(blob: Blob) {
+  showBrandingCropper.value = false;
+  brandingCropFile.value = null;
+  brandingSaving.value = true;
+  adminMsg.value = '';
+  try {
+    const form = new FormData();
+    form.append('file', blob, 'site-logo.png');
+    const response = await fetch('/api/admin/branding/logo', { method: 'POST', headers: authHeaders(), body: form });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || '网站图标保存失败');
+    brandingLogoUrl.value = data.logoUrl ? `${data.logoUrl}?v=${Date.now()}` : null;
+    adminMsg.value = '网站图标已更新';
+  } catch (error) {
+    adminMsg.value = error instanceof Error ? error.message : '网站图标保存失败';
+  } finally {
+    brandingSaving.value = false;
+  }
 }
 
 async function fetchAuthMe() {
@@ -1116,7 +1177,10 @@ async function importBatchSongs() {
   <main class="app-shell">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-mark">M</div>
+        <div class="brand-mark" :class="{ 'has-logo': brandingLogoUrl }">
+          <img v-if="brandingLogoUrl" :src="brandingLogoUrl" alt="网站图标" />
+          <span v-else>M</span>
+        </div>
         <span>EricJC Music</span>
       </div>
 
@@ -1407,6 +1471,7 @@ async function importBatchSongs() {
           <button :class="{ active: activeAdminTab === 'users' }" @click="activeAdminTab = 'users'">用户管理</button>
           <button :class="{ active: activeAdminTab === 'upload' }" @click="activeAdminTab = 'upload'"><Upload :size="16" />上传歌曲</button>
           <button :class="{ active: activeAdminTab === 'batch' }" @click="activeAdminTab = 'batch'"><Files :size="16" />批量导入</button>
+          <button :class="{ active: activeAdminTab === 'branding' }" @click="activeAdminTab = 'branding'"><Settings :size="16" />网站图标</button>
         </div>
       </header>
 
@@ -1436,6 +1501,25 @@ async function importBatchSongs() {
             <button class="icon-button danger" type="button" title="删除" @click="deleteSongItem(song)"><Trash2 :size="16" /></button>
           </span>
         </div>
+      </section>
+
+      <section v-if="activeAdminTab === 'branding'" class="branding-panel">
+        <div class="branding-card">
+          <div class="branding-preview" :class="{ 'has-logo': brandingLogoUrl }">
+            <img v-if="brandingLogoUrl" :src="brandingLogoUrl" alt="当前网站图标" />
+            <ImageIcon v-else :size="42" />
+          </div>
+          <div class="branding-copy">
+            <p class="eyebrow">品牌识别</p>
+            <h2>网站图标</h2>
+            <p>上传图片后拖动位置并调整缩放，系统会输出圆角方形图标并应用到左上角品牌标志。</p>
+            <div class="branding-actions">
+              <button class="primary-action" type="button" :disabled="brandingSaving" @click="openBrandingPicker"><Upload :size="17" />{{ brandingSaving ? '保存中…' : '上传并裁剪' }}</button>
+              <input ref="brandingInput" type="file" accept="image/*" hidden @change="handleBrandingSelect" />
+            </div>
+          </div>
+        </div>
+        <ImageCropper v-if="showBrandingCropper && brandingCropFile" :file="brandingCropFile" title="调整网站图标" @confirm="saveBrandingLogo" @cancel="cancelBrandingCrop" />
       </section>
 
       <section v-if="activeAdminTab === 'users'">

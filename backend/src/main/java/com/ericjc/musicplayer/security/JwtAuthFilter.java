@@ -14,8 +14,10 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
-import java.util.Collections;
+import java.util.List;
 import java.util.Optional;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 
 @Component
 public class JwtAuthFilter extends OncePerRequestFilter {
@@ -39,8 +41,13 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
             if (userOpt.isPresent()) {
                 User user = userOpt.get();
+                // 将用户角色转为 Spring Security 的 GrantedAuthority，
+                // 使 SecurityConfig 中的 hasRole("ADMIN") 检查能够正常生效。
+                List<GrantedAuthority> authorities = List.of(
+                        new SimpleGrantedAuthority("ROLE_" + user.getRole())
+                );
                 UsernamePasswordAuthenticationToken authentication =
-                        new UsernamePasswordAuthenticationToken(user, null, Collections.emptyList());
+                        new UsernamePasswordAuthenticationToken(user, null, authorities);
                 authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
                 SecurityContextHolder.getContext().setAuthentication(authentication);
             }

@@ -35,7 +35,9 @@ public class SecurityConfig {
                 .requestMatchers("/api/songs").permitAll()
                 .requestMatchers("/uploads/**").permitAll()
                 .requestMatchers("/error").permitAll()
-                .requestMatchers("/api/admin/**").authenticated()
+                // 管理接口在框架层强制要求 ADMIN 角色，
+                // 比在每个 Controller 方法里手动 if (!admin.isAdmin()) 更安全规范。
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated()
             )
             .exceptionHandling(exception -> exception.authenticationEntryPoint(unauthorizedEntryPoint()))

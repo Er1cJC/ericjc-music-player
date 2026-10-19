@@ -8,6 +8,7 @@ import com.ericjc.musicplayer.repository.SongRepository;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Set;
 
 @Service
 public class SongService {
@@ -22,11 +23,13 @@ public class SongService {
 
     public List<SongDto> getAllSongs(User user) {
         List<Song> songs = songRepository.findAll();
+        // 修复 N+1 查询：先一次性取出该用户所有收藏的 songId 集合，
+        // 再用 Set.contains() O(1) 判断，避免每首歌单独查一次数据库。
+        Set<Long> likedIds = user != null
+                ? favoriteRepository.findSongIdsByUser(user)
+                : Set.of();
         return songs.stream()
-                .map(song -> {
-                    boolean liked = user != null && favoriteRepository.existsByUserAndSongId(user, song.getId());
-                    return SongDto.fromSong(song, liked);
-                })
+                .map(song -> SongDto.fromSong(song, likedIds.contains(song.getId())))
                 .toList();
     }
 

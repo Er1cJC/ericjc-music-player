@@ -61,6 +61,14 @@ const searchKeyword = ref('');
 const searchField = ref<'all' | 'title' | 'artist' | 'album'>('all');
 const isLoading = ref(false);
 const errorMessage = ref('');
+// ——————————————————————————————————————————————————————————————
+// 设计说明：视图导航不使用 Vue Router
+// 本应用同时支持 Web（Vite 代理）和 Electron（file:// 协议）两种运行模式。
+// 在 Electron 中，hash 路由容易与 file:// 路径冲突，history 路由则需要额外的
+// 本地服务器配置。由于页面结构固定、无需 SEO、也无需分享 URL，用 activeView
+// ref 做状态机切换是更简单且完全等效的方案；若日后迁移为纯 Web 应用，
+// 替换为 Vue Router 的成本也很低。
+// ——————————————————————————————————————————————————————————————
 const activeView = ref<ViewKey>('discover');
 
 const authToken = ref<string | null>(localStorage.getItem('musicPlayerToken'));
